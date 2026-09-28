@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import {
-  browse, getConfig, getDiscInfo, getDrives, pingXbox, queueGame,
+  addToWishlist, browse, enqueueGame, getConfig, getDiscInfo, getDrives, pingXbox,
   ApiError, getUnifiedQueue, removeFtpJob, removeGameJob, setApiBaseUrl, type BrowseResult, type InstallType, type Job, type ServerConfig, type Source,
 } from './api'
 import { useI18n, type Translate, type TranslationKey } from './i18n'
 import { ContentManager, FtpManager, IsoTools, SaveManager, XboxLibrary } from './management'
+import { IsoUpload, WaitingQueue, Wishlist, useScheduler } from './queue'
 
 const platforms = [
   { id: 'xbox360', label: 'platformXbox360' },
@@ -22,13 +23,13 @@ const sources: { id: Source; label: TranslationKey }[] = [
   { id: 'ia', label: 'sourceIa' },
 ]
 
-type Page = 'catalog' | 'queue' | 'library' | 'ftp' | 'content' | 'saves' | 'iso' | 'settings'
+type Page = 'catalog' | 'queue' | 'wishlist' | 'library' | 'ftp' | 'content' | 'saves' | 'iso' | 'settings'
 type RouteState = { page: Page; source: Source; platform: string; search: string; limit: number }
 
 function readRouteState(): RouteState {
   const params = new URLSearchParams(window.location.search)
   const requestedPage = params.get('view') as Page | null
-  const validPages: Page[] = ['catalog', 'queue', 'library', 'ftp', 'content', 'saves', 'iso', 'settings']
+  const validPages: Page[] = ['catalog', 'queue', 'wishlist', 'library', 'ftp', 'content', 'saves', 'iso', 'settings']
   const requestedSource = params.get('source') as Source | null
   const validSources: Source[] = ['local', 'minerva', 'ia']
   const requestedPlatform = params.get('platform') || 'xbox360'
@@ -111,9 +112,9 @@ function Jobs({ jobs, error, onRefresh, onRemoved }: { jobs: Job[]; error: unkno
   </div>
 }
 
-function QueueDialog({ game, platform, source, ip, defaultDrive, onClose, onQueued }: {
+function QueueDialog({ game, platform, source, ip, defaultDrive, onClose, onQueued, onWishlisted }: {
   game: string; platform: string; source: Source; ip: string; defaultDrive: string;
-  onClose: () => void; onQueued: (status: string) => void
+  onClose: () => void; onQueued: (status: string) => void; onWishlisted: () => void
 }) {
   const { t } = useI18n()
   const [drives, setDrives] = useState<string[]>([])
@@ -135,12 +136,13 @@ function QueueDialog({ game, platform, source, ip, defaultDrive, onClose, onQueu
     return () => { active = false }
   }, [game, ip, hasMethods])
 
-  async function submit() {
+  async function submit(target: 'queue' | 'wishlist') {
     if (!isIp(ip)) { setError(new LocalizedError('ipRequiredBeforeQueue')); return }
     setBusy(true); setError(null)
     try {
-      const status = await queueGame({ game, platform, source, ip: ip.trim(), drive, installType: hasMethods ? installType : 'god' })
-      onQueued(status)
+      const entry = { game, platform, source, ip: ip.trim(), drive, installType: hasMethods ? installType : 'god' as InstallType }
+      if (target === 'wishlist') { await addToWishlist(entry); onWishlisted() }
+      else onQueued(await enqueueGame(entry))
     } catch (cause) { setError(cause) }
     finally { setBusy(false) }
   }
@@ -162,7 +164,7 @@ function QueueDialog({ game, platform, source, ip, defaultDrive, onClose, onQueu
       </fieldset>}
       {notes && <p className="hint">{notes}</p>}
       {Boolean(error) && <p className="inline-error">{message(error, t)}</p>}
-      <div className="modal-actions"><button className="button secondary" onClick={onClose}>{t('cancel')}</button><button className="button primary" disabled={busy} onClick={submit}>{busy ? t('sending') : t('addToQueue')}</button></div>
+      <div className="modal-actions"><button className="button secondary" onClick={onClose}>{t('cancel')}</button><button className="button secondary" disabled={busy} onClick={() => void submit('wishlist')}>{t('addToWishlist')}</button><button className="button primary" disabled={busy} onClick={() => void submit('queue')}>{busy ? t('sending') : t('addToQueue')}</button></div>
     </section>
   </div>
 }
@@ -207,6 +209,7 @@ export default function App() {
   }, [platform, source])
 
   useEffect(() => { setApiBaseUrl(serverUrl) }, [serverUrl])
+  const scheduler = useScheduler(serverUrl)
   useEffect(() => { void refreshConfig(); void refreshQueue() }, [serverUrl, refreshConfig, refreshQueue])
   useEffect(() => { const id = window.setInterval(() => void refreshConfig(), 15000); return () => clearInterval(id) }, [refreshConfig])
   useEffect(() => { void refreshCatalog() }, [refreshCatalog])
@@ -236,6 +239,7 @@ export default function App() {
 
   const filtered = useMemo(() => catalog.games.filter(game => game.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())), [catalog.games, search])
   const activeJobs = jobs.filter(job => job.state === 'Processing').length
+  const waitingCount = scheduler.state.pending.length
 
   const checkXbox = useCallback(async (ip = xboxIp) => {
     if (!isIp(ip)) { setXboxError(new LocalizedError('invalidIp')); setXboxState('error'); return }
@@ -292,7 +296,8 @@ export default function App() {
       <div className="rail-rule" />
       <nav aria-label={t('mainNavigation')}>
         <button className={page === 'catalog' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('catalog')}><span className="nav-glyph">▤</span>{t('catalog')}</button>
-        <button className={page === 'queue' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('queue')}><span className="nav-glyph">◷</span>{t('queue')} {activeJobs > 0 && <span className="nav-count">{activeJobs}</span>}</button>
+        <button className={page === 'queue' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('queue')}><span className="nav-glyph">◷</span>{t('queue')} {activeJobs + waitingCount > 0 && <span className="nav-count">{activeJobs + waitingCount}</span>}</button>
+        <button className={page === 'wishlist' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('wishlist')}><span className="nav-glyph">☆</span>{t('wishlist')} {scheduler.state.wishlist.length > 0 && <span className="nav-count">{scheduler.state.wishlist.length}</span>}</button>
         <button className={page === 'library' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('library')}><span className="nav-glyph">◉</span>{t('xboxLibrary')}</button>
         <button className={page === 'ftp' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('ftp')}><span className="nav-glyph">▦</span>{t('ftpManager')}</button>
         <button className={page === 'content' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('content')}><span className="nav-glyph">+</span>{t('content')}</button>
@@ -315,7 +320,7 @@ export default function App() {
     </aside>
 
     <main className="main-content">
-      <header className="topbar"><span>GODsend / {t(page === 'catalog' ? 'catalog' : page === 'queue' ? 'queue' : page === 'library' ? 'xboxLibrary' : page === 'ftp' ? 'ftpManager' : page === 'content' ? 'content' : page === 'saves' ? 'saves' : page === 'iso' ? 'isoTools' : 'connection')}</span><div className="topbar-right"><label className="language-control"><span>{t('language')}</span><select aria-label={t('language')} value={language} onChange={event => setLanguage(event.target.value as 'en' | 'pt-BR')}><option value="en">EN</option><option value="pt-BR">PT-BR</option></select></label><span className="server-label">{t('backend')}</span><span className={config ? 'server-pill online' : 'server-pill'}>{config ? t('online') : t('offline')}</span></div></header>
+      <header className="topbar"><span>GODsend / {t(page === 'catalog' ? 'catalog' : page === 'queue' ? 'queue' : page === 'wishlist' ? 'wishlist' : page === 'library' ? 'xboxLibrary' : page === 'ftp' ? 'ftpManager' : page === 'content' ? 'content' : page === 'saves' ? 'saves' : page === 'iso' ? 'isoTools' : 'connection')}</span><div className="topbar-right"><label className="language-control"><span>{t('language')}</span><select aria-label={t('language')} value={language} onChange={event => setLanguage(event.target.value as 'en' | 'pt-BR')}><option value="en">EN</option><option value="pt-BR">PT-BR</option></select></label><span className="server-label">{t('backend')}</span><span className={config ? 'server-pill online' : 'server-pill'}>{config ? t('online') : t('offline')}</span></div></header>
       {notice && <div className="toast" role="status">{t(notice)}</div>}
       {Boolean(serverError) && <div className="server-alert" role="alert">{t('serverUnavailable', { error: message(serverError, t) })} <button onClick={refreshConfig}>{t('tryAgain')}</button></div>}
 
@@ -325,6 +330,7 @@ export default function App() {
           <div className="section-heading"><div><span className="eyebrow">{t('source')}</span><h2>{t('exploreCatalog')}</h2></div><button className="icon-button" onClick={refreshCatalog} title={t('refreshCatalog')} aria-label={t('refreshCatalog')}>↻</button></div>
           <div className="tab-row" role="group" aria-label={t('gameSource')}>{sources.map(item => <button key={item.id} className={source === item.id ? 'tab active' : 'tab'} onClick={() => setSource(item.id)}>{t(item.label)}</button>)}</div>
           {source !== 'local' && <div className="platform-row"><label htmlFor="platform">{t('platform')}</label><select id="platform" value={platform} onChange={event => setPlatform(event.target.value)}>{platforms.map(item => <option key={item.id} value={item.id}>{t(item.label)}</option>)}</select></div>}
+          {source === 'local' && <IsoUpload onUploaded={() => void refreshCatalog()} />}
           <div className="search-row"><label className="search-field"><span aria-hidden="true">⌕</span><input value={search} onChange={event => { setSearch(event.target.value); setLimit(80) }} placeholder={t('searchPlaceholder')} aria-label={t('searchGames')} /></label><span className="result-count">{t(filtered.length === 1 ? 'oneTitle' : 'manyTitles', { count: filtered.length })}</span></div>
           <div className="catalog-results">
             {catalogState === 'loading' && <div className="empty-state"><span className="empty-mark">◌</span><p>{t('loadingCatalog')}</p></div>}
@@ -337,7 +343,9 @@ export default function App() {
         </section><aside className="activity-panel"><Jobs jobs={jobs.slice(0, 6)} error={queueError} onRefresh={refreshQueue} onRemoved={() => void refreshQueue()} />{jobs.length > 6 && <button className="view-all" onClick={() => setPage('queue')}>{t('viewAllJobs')}</button>}<div className="info-block"><span className="eyebrow">{t('destination')}</span><strong>{xboxIp || t('xboxNotConfigured')}</strong><small>{xboxIp ? t('defaultDrive', { drive: config?.default_drive || 'Hdd1:' }) : t('configureConsole')}</small><button onClick={() => setPage('settings')}>{t('openConnection')}</button></div></aside></div>
       </div>}
 
-      {page === 'queue' && <div className="page-content narrow"><div className="page-intro"><span className="eyebrow">{t('processingFtp')}</span><h1>{t('workInProgress')}</h1><p>{t('queueRefreshHint')}</p></div><section className="full-panel"><Jobs jobs={jobs} error={queueError} onRefresh={refreshQueue} onRemoved={() => void refreshQueue()} /></section></div>}
+      {page === 'queue' && <div className="page-content narrow"><div className="page-intro"><span className="eyebrow">{t('processingFtp')}</span><h1>{t('workInProgress')}</h1><p>{t('queueRefreshHint')}</p></div><WaitingQueue scheduler={scheduler} runningJobs={activeJobs} /><section className="full-panel queue-running"><Jobs jobs={jobs} error={queueError} onRefresh={refreshQueue} onRemoved={() => void refreshQueue()} /></section></div>}
+
+      {page === 'wishlist' && <Wishlist scheduler={scheduler} xboxIp={xboxIp} />}
 
       {page === 'library' && <XboxLibrary xboxIp={xboxIp} />}
       {page === 'ftp' && <FtpManager xboxIp={xboxIp} />}
@@ -347,6 +355,6 @@ export default function App() {
 
       {page === 'settings' && <div className="page-content narrow"><div className="page-intro"><span className="eyebrow">{t('localNetwork')}</span><h1>{t('connectXbox')}</h1><p>{t('ftpDescription')}</p></div><section className="settings-panel"><div className="section-heading"><div><span className="eyebrow">XBOX 360</span><h2>{t('xboxAddress')}</h2></div></div><p>{t('xboxIpInstructions')}</p><div className="settings-form"><label className="field"><span>{t('xboxIp')}</span><input inputMode="decimal" value={ipInput} onChange={event => setIpInput(event.target.value)} placeholder="192.168.1.50" /></label><button className="button primary" onClick={saveXboxIp}>{t('saveAndTest')}</button></div>{xboxState === 'checking' && <p className="connection-message">{t('testingFtp')}</p>}{xboxState === 'connected' && <p className="connection-message success">{t('ftpConnected')}</p>}{Boolean(xboxError) && <p className="inline-error">{message(xboxError, t)}</p>}<div className="settings-note"><span className="eyebrow">{t('godsendServer')}</span><strong>{effectiveServerAddress}</strong><small>{t('sameOriginApi')}</small></div><div className="server-settings"><span className="eyebrow">{t('server')}</span><h2>{t('serverAddress')}</h2><p>{t('serverAddressInstructions')}</p><div className="settings-form"><label className="field"><span>{t('serverAddress')}</span><input type="url" inputMode="url" value={serverInput} onChange={event => setServerInput(event.target.value)} placeholder={window.location.origin} /></label><button className="button primary" disabled={serverSaving} onClick={() => void saveServerAddress()}>{serverSaving ? t('connecting') : t('saveAndConnect')}</button></div><div className="server-actions"><small>{t('defaultServer', { address: window.location.origin })}</small><button className="text-button" onClick={() => void saveServerAddress('')}>{t('useDefaultServer')}</button></div>{Boolean(serverInputError) && <p className="inline-error">{message(serverInputError, t)}</p>}</div></section></div>}
     </main>
-    {selected && <QueueDialog game={selected} platform={platform} source={source} ip={xboxIp} defaultDrive={config?.default_drive || 'Hdd1:'} onClose={() => setSelected(null)} onQueued={status => { setSelected(null); setNotice(status === 'already_processing' ? 'alreadyProcessing' : status === 'already_ready' ? 'alreadyReady' : 'gameQueued'); void refreshQueue() }} />}
+    {selected && <QueueDialog game={selected} platform={platform} source={source} ip={xboxIp} defaultDrive={config?.default_drive || 'Hdd1:'} onClose={() => setSelected(null)} onQueued={status => { setSelected(null); setNotice(status === 'already_processing' ? 'alreadyProcessing' : status === 'already_ready' ? 'alreadyReady' : 'gameQueued'); void refreshQueue(); void scheduler.refresh() }} onWishlisted={() => { setSelected(null); setNotice('gameWishlisted'); void scheduler.refresh() }} />}
   </div>
 }

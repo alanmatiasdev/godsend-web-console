@@ -9,6 +9,9 @@ export type ContentItem = { title_id: string; content_type: string; display_name
 export type ContentManifest = { title_id: string; game_name?: string; dlcs?: ContentItem[]; title_updates?: ContentItem[] }
 export type SaveProfile = { profile_id: string; profile_name: string; save_count?: number; last_modified?: string }
 export type SaveEntry = { name: string; size: number }
+export class HttpError extends Error {
+  constructor(message: string, public status: number) { super(message) }
+}
 export class ApiError extends Error {
   constructor(public code: 'timeout' | 'network' | 'localUnavailable') { super(code) }
 }
@@ -34,7 +37,7 @@ async function request(path: string, init?: RequestInit, baseUrl = apiBaseUrl, t
         const error = await response.json()
         detail = error.message || error.error || detail
       } catch { /* A plain-text response is valid for some routes. */ }
-      throw new Error(detail)
+      throw new HttpError(detail, response.status)
     }
     return response
   } catch (error) {
@@ -351,6 +354,68 @@ export async function queueGame(args: {
   if (result.error) throw new Error(result.error)
   if (result.status === 'local_unavailable') throw new ApiError('localUnavailable')
   return result.status || 'triggered'
+}
+
+export type QueueItem = { id: string; game: string; platform: string; source: Source; ip: string; drive: string; installType: InstallType; held: boolean; error?: string }
+export type SchedulerState = { paused: boolean; maxConcurrent: number; wishlist: QueueItem[]; pending: QueueItem[]; skipped?: string[] }
+export type QueueEntry = { game: string; platform: string; source: Source; ip: string; drive: string; installType: InstallType }
+export type SchedulerAction =
+  | { action: 'enqueue' | 'wishlist_add'; item: { game: string; platform: string; source: string; ip: string; drive: string; installType: string } }
+  | { action: 'wishlist_send'; ids?: string[] }
+  | { action: 'wishlist_update'; id: string; drive?: string; installType?: InstallType }
+  | { action: 'move'; id: string; direction: 'up' | 'down' | 'top' | 'bottom' }
+  | { action: 'remove' | 'hold' | 'unhold' | 'start' | 'to_wishlist' | 'wishlist_remove'; id: string }
+  | { action: 'set_max'; value: number }
+  | { action: 'pause' | 'resume' | 'clear_finished' | 'clear_pending' | 'wishlist_clear' }
+
+export async function getSchedulerState(): Promise<SchedulerState> {
+  return (await request('/webui/queue/state')).json()
+}
+
+export async function schedulerAction(action: SchedulerAction): Promise<SchedulerState> {
+  return jsonRequest<SchedulerState>('/webui/queue/action', action, 'POST', 30000)
+}
+
+function queueEntryBody(entry: QueueEntry) {
+  return { game: entry.game, platform: entry.source === 'local' ? 'local' : entry.platform, source: entry.source, ip: entry.ip, drive: entry.drive, installType: entry.installType }
+}
+
+export async function addToWishlist(entry: QueueEntry): Promise<void> {
+  await schedulerAction({ action: 'wishlist_add', item: queueEntryBody(entry) })
+}
+
+// Adds a game to the waiting queue, which starts it as soon as GODsend has room. A GODsend without the
+// scheduler (older or unpatched build) does not have that route, so start the game directly instead.
+export async function enqueueGame(entry: QueueEntry): Promise<string> {
+  try {
+    await schedulerAction({ action: 'enqueue', item: queueEntryBody(entry) })
+    return 'queued'
+  } catch (error) {
+    if (!(error instanceof HttpError) || (error.status !== 404 && error.status !== 405)) throw error
+    return queueGame({ game: entry.game, platform: entry.platform, source: entry.source, ip: entry.ip, drive: entry.drive, installType: entry.installType })
+  }
+}
+
+// XMLHttpRequest instead of fetch: it is the only way a browser reports upload progress.
+export function uploadIso(file: File, onProgress: (fraction: number) => void, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    const body = new FormData()
+    body.append('files', file, file.name)
+    xhr.open('POST', apiBaseUrl ? new URL('/webui/upload-iso', `${apiBaseUrl}/`).toString() : '/webui/upload-iso')
+    xhr.upload.onprogress = event => { if (event.lengthComputable) onProgress(event.loaded / event.total) }
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) { onProgress(1); resolve(); return }
+      let detail = `${xhr.status} ${xhr.statusText}`
+      try { const parsed = JSON.parse(xhr.responseText); detail = parsed.message || parsed.error || detail } catch { /* Plain-text error. */ }
+      reject(new HttpError(detail, xhr.status))
+    }
+    xhr.onerror = () => reject(new ApiError('network'))
+    xhr.onabort = () => reject(new DOMException('Upload cancelled', 'AbortError'))
+    signal?.addEventListener('abort', () => xhr.abort(), { once: true })
+    if (signal?.aborted) { reject(new DOMException('Upload cancelled', 'AbortError')); return }
+    xhr.send(body)
+  })
 }
 
 export async function getFtpJobs(): Promise<FtpJob[]> {
