@@ -1,0 +1,8 @@
+**
+!Dockerfile.release
+!release/
+!release/bin/
+!release/bin/linux-amd64/
+!release/bin/linux-amd64/godsend
+!release/bin/linux-arm64/
+!release/bin/linux-arm64/godsend

@@ -51,6 +51,45 @@ Set the Xbox IP on the **Connection** page. Its connection status is shown in th
 
 ## Embed in the original Go binary
 
+### Published packages
+
+Each [GitHub Release](https://github.com/alanmatiasdev/godsend-web-console/releases) provides:
+
+| Package | Purpose |
+| --- | --- |
+| `godsend-web-console-vX.Y.Z.tar.gz` | Built UI, Go integration files, Aurora fallback scripts, and the integration command. Use this with your own GODsend source checkout; Node.js runs the patcher, but npm is not needed. |
+| `godsend-vX.Y.Z-<os>-<arch>.tar.gz` or `.zip` | GODsend server already compiled with the web UI embedded. Linux amd64/arm64, macOS amd64/arm64, and Windows amd64 are built. |
+| `SHA256SUMS` | Checksums for every archive. |
+
+The same release publishes `ghcr.io/alanmatiasdev/godsend-web-console:vX.Y.Z` (and `:latest`) for Linux amd64 and arm64 through [GitHub Container Registry](https://github.com/alanmatiasdev/godsend-web-console/pkgs/container/godsend-web-console). It contains the complete server, UI, and `aria2`. Pin a version tag in deployments. The binaries and image currently integrate [GODSend-360 commit `ff70dad`](https://github.com/ghostyshell/GODSend-360/commit/ff70dadc7c86c8a52dbd366595ae93419d4b55f4); this is updated only after compatibility is verified. Standalone binaries need `aria2c` on `PATH` for BitTorrent downloads.
+
+For a local build using a downloaded integration kit:
+
+```sh
+tar xzf godsend-web-console-vX.Y.Z.tar.gz
+node godsend-web-console-vX.Y.Z/scripts/integrate.mjs /path/to/GODSend-360
+cd /path/to/GODSend-360/src/server
+CGO_ENABLED=0 go build -o godsend .
+```
+
+For a Docker or home-server deployment, reference the prebuilt GHCR image directly:
+
+```yaml
+services:
+  godsend:
+    image: ghcr.io/alanmatiasdev/godsend-web-console:vX.Y.Z
+    environment:
+      GODSEND_HOME: /data
+    volumes:
+      - ./data:/data
+    ports:
+      - "8080:8080"
+```
+
+Keep the existing GODsend environment variables and data/save mounts when replacing a source-built image. The backend API has no authentication; expose it only on a trusted network.
+
+### Build from this checkout
+
 With a checkout of the [upstream repository](https://github.com/ghostyshell/GODSend-360), run from this project:
 
 ```sh
@@ -75,3 +114,11 @@ The integration also adds `/webui/unity-archive/title`, `/cover`, and `/icon` (e
 To install, use **Server settings → Install Aurora scripts** with source `<upstream>/aurora-scripts-archive-fallback` and Xbox destination `/Hdd1/Aurora/User/Scripts/Utility/ArchiveFallback` (adjust the Aurora drive and root as needed). Enter the GODsend host IP and port, then upload. Restart Aurora if the script does not appear under Utility scripts. Run **GODsend Archive Fallback** to check the library. The script retains existing names and assets, stages missing PNGs in `Aurora/User/Import/<TitleID>/`, and reports the results. Then choose **Aurora Settings → Assets → Import** to install staged images.
 
 The fallback needs access from the GODsend host to `raw.githubusercontent.com`; it does not need XboxUnity to be online. The archive's README reports its last scrape as June 16, 2025. The archive's original content is CC BY-NC 4.0, while XboxUnity images retain their owners' rights; this integration downloads images on demand and does not bundle them.
+
+## Releasing
+
+Release Please opens a version and changelog PR from Conventional Commits on `main`. Merging it creates a GitHub Release. The release workflow then builds the integration kit, tests the patched Go handlers, cross-compiles the binaries, attaches the archives and checksums, and publishes the multi-architecture image to GHCR. Nothing is published to npm.
+
+Enable **Settings → Actions → General → Workflow permissions → Allow GitHub Actions to create and approve pull requests** in the GitHub repository. If CI checks must run automatically on Release Please's own PRs, set a `RELEASE_PLEASE_TOKEN` repository secret with a GitHub App or PAT that can write contents and pull requests; GitHub suppresses workflows triggered by PRs created with the default `GITHUB_TOKEN`. Regular contributor PRs run CI without this secret.
+
+After the first GHCR publication, set the container package visibility to **Public** in its package settings so anyone can pull the image without a token.

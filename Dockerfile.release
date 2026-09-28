@@ -1,0 +1,13 @@
+# Release binaries are built and tested by .github/workflows/release.yml.
+FROM alpine:3.21
+ARG TARGETARCH
+LABEL org.opencontainers.image.source="https://github.com/alanmatiasdev/godsend-web-console"
+RUN apk add --no-cache ca-certificates aria2 \
+ && adduser -D -u 1000 godsend \
+ && mkdir -p /data /saves \
+ && chown godsend:godsend /data /saves
+COPY release/bin/linux-${TARGETARCH}/godsend /usr/local/bin/godsend
+ENV GODSEND_HOME=/data
+EXPOSE 8080
+USER godsend
+ENTRYPOINT ["godsend"]
