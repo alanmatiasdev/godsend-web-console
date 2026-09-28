@@ -27,3 +27,12 @@ func registerWebUI(mux *stdhttp.ServeMux) {
 		stdhttp.Redirect(w, r, "/ui/", stdhttp.StatusTemporaryRedirect)
 	})
 }
+
+// webCORS allows a separately hosted GODsend Web UI to use this backend.
+// The backend has no cookie or browser credential authentication, so requests
+// are intentionally handled without credentials.
+func webCORS(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+}

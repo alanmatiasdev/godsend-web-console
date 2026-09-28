@@ -7,11 +7,21 @@ export class ApiError extends Error {
   constructor(public code: 'timeout' | 'network' | 'localUnavailable') { super(code) }
 }
 
-async function request(path: string, init?: RequestInit): Promise<Response> {
+let apiBaseUrl = ''
+
+export function setApiBaseUrl(url: string): void {
+  apiBaseUrl = url.replace(/\/$/, '')
+}
+
+export function getApiBaseUrl(): string {
+  return apiBaseUrl
+}
+
+async function request(path: string, init?: RequestInit, baseUrl = apiBaseUrl): Promise<Response> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 12000)
   try {
-    const response = await fetch(path, { ...init, signal: controller.signal, cache: 'no-store' })
+    const response = await fetch(baseUrl ? new URL(path, `${baseUrl}/`).toString() : path, { ...init, signal: controller.signal, cache: 'no-store' })
     if (!response.ok) {
       let detail = `${response.status} ${response.statusText}`
       try {
@@ -34,8 +44,8 @@ function query(path: string, params: Record<string, string>): string {
   return `${path}?${new URLSearchParams(params)}`
 }
 
-export async function getConfig(): Promise<ServerConfig> {
-  return (await request('/config')).json()
+export async function getConfig(baseUrl?: string): Promise<ServerConfig> {
+  return (await request('/config', undefined, baseUrl)).json()
 }
 
 export async function getQueue(): Promise<Job[]> {

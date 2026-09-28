@@ -31,3 +31,12 @@ func TestEmbeddedWebUI(t *testing.T) {
 		t.Fatalf("GET /: status %d, location %q", root.Code, root.Header().Get("Location"))
 	}
 }
+
+func TestWebCORS(t *testing.T) {
+	mux := (&Deps{}).NewRouter()
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest("OPTIONS", "/config", nil))
+	if response.Code != 204 || response.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("OPTIONS /config: status %d, origin %q", response.Code, response.Header().Get("Access-Control-Allow-Origin"))
+	}
+}

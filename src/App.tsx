@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   browse, getConfig, getDiscInfo, getDrives, getQueue, pingXbox, queueGame,
-  ApiError, type BrowseResult, type InstallType, type Job, type ServerConfig, type Source,
+  ApiError, setApiBaseUrl, type BrowseResult, type InstallType, type Job, type ServerConfig, type Source,
 } from './api'
 import { useI18n, type Translate, type TranslationKey } from './i18n'
 
@@ -38,6 +38,23 @@ function message(error: unknown, t: Translate): string {
 function isIp(value: string): boolean {
   const parts = value.trim().split('.')
   return parts.length === 4 && parts.every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255)
+}
+
+function normalizeServerUrl(value: string): string | null {
+  const trimmed = value.trim()
+  if (!trimmed) return ''
+  try {
+    const url = new URL(trimmed)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+    return url.toString().replace(/\/$/, '')
+  } catch {
+    return null
+  }
+}
+
+function storedServerUrl(): string {
+  try { return localStorage.getItem('godsend.serverUrl') || '' }
+  catch { return '' }
 }
 
 function stateLabel(state: string, t: Translate): string {
@@ -131,6 +148,10 @@ export default function App() {
   const [serverError, setServerError] = useState<unknown>(null)
   const [jobs, setJobs] = useState<Job[]>([])
   const [queueError, setQueueError] = useState<unknown>(null)
+  const [serverUrl, setServerUrl] = useState(storedServerUrl)
+  const [serverInput, setServerInput] = useState(() => storedServerUrl() || window.location.origin)
+  const [serverInputError, setServerInputError] = useState<unknown>(null)
+  const [serverSaving, setServerSaving] = useState(false)
   const [xboxIp, setXboxIp] = useState(() => localStorage.getItem('godsend.xboxIp') || '')
   const [ipInput, setIpInput] = useState(xboxIp)
   const [xboxState, setXboxState] = useState<'idle' | 'checking' | 'connected' | 'error'>('idle')
@@ -152,7 +173,8 @@ export default function App() {
     catch (cause) { setCatalogError(cause); setCatalogState('error') }
   }, [platform, source])
 
-  useEffect(() => { void refreshConfig(); void refreshQueue() }, [refreshConfig, refreshQueue])
+  useEffect(() => { setApiBaseUrl(serverUrl) }, [serverUrl])
+  useEffect(() => { void refreshConfig(); void refreshQueue(); void refreshCatalog() }, [serverUrl, refreshConfig, refreshQueue, refreshCatalog])
   useEffect(() => { const id = window.setInterval(() => void refreshConfig(), 15000); return () => clearInterval(id) }, [refreshConfig])
   useEffect(() => { void refreshCatalog(); setSearch(''); setLimit(80) }, [refreshCatalog])
   useEffect(() => { const id = window.setInterval(() => void refreshQueue(), 5000); return () => clearInterval(id) }, [refreshQueue])
@@ -170,12 +192,16 @@ export default function App() {
   const filtered = useMemo(() => catalog.games.filter(game => game.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())), [catalog.games, search])
   const activeJobs = jobs.filter(job => job.state === 'Processing').length
 
-  async function checkXbox(ip = xboxIp) {
+  const checkXbox = useCallback(async (ip = xboxIp) => {
     if (!isIp(ip)) { setXboxError(new LocalizedError('invalidIp')); setXboxState('error'); return }
     setXboxState('checking'); setXboxError(null)
     try { await pingXbox(ip.trim()); setXboxState('connected') }
     catch (cause) { setXboxError(cause); setXboxState('error') }
-  }
+  }, [serverUrl, xboxIp])
+
+  useEffect(() => {
+    if (xboxIp) void checkXbox(xboxIp)
+  }, [xboxIp, checkXbox])
 
   function saveXboxIp() {
     if (!isIp(ipInput)) { setXboxError(new LocalizedError('invalidIp')); return }
@@ -183,8 +209,37 @@ export default function App() {
     localStorage.setItem('godsend.xboxIp', next)
     setXboxIp(next)
     setXboxState('idle'); setXboxError(null); setNotice('xboxIpSaved')
-    void checkXbox(next)
   }
+
+  async function saveServerAddress(value = serverInput) {
+    const next = normalizeServerUrl(value)
+    if (next === null) { setServerInputError(new LocalizedError('invalidServerUrl')); return }
+    setServerSaving(true); setServerInputError(null)
+    try {
+      const nextConfig = await getConfig(next)
+      setApiBaseUrl(next)
+      if (next) localStorage.setItem('godsend.serverUrl', next)
+      else localStorage.removeItem('godsend.serverUrl')
+      setServerUrl(next)
+      setServerInput(next || window.location.origin)
+      setConfig(nextConfig)
+      setServerError(null)
+      setNotice('serverAddressSaved')
+    } catch (cause) {
+      setServerInputError(cause)
+    } finally {
+      setServerSaving(false)
+    }
+  }
+
+  const effectiveServerAddress = serverUrl || window.location.origin
+  const xboxStatus = xboxState === 'connected'
+    ? { label: t('xboxConnected'), className: 'ready' }
+    : xboxState === 'checking'
+      ? { label: t('xboxChecking'), className: 'processing' }
+      : xboxIp
+        ? { label: t('xboxUnavailable'), className: 'error' }
+        : { label: t('xboxNotConfigured'), className: '' }
 
   return <div className="app-shell">
     <aside className="rail">
@@ -195,7 +250,18 @@ export default function App() {
         <button className={page === 'queue' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('queue')}><span className="nav-glyph">◷</span>{t('queue')} {activeJobs > 0 && <span className="nav-count">{activeJobs}</span>}</button>
         <button className={page === 'settings' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('settings')}><span className="nav-glyph">⚙</span>{t('connection')}</button>
       </nav>
-      <div className="rail-bottom"><span className="rail-caption">{t('server')}</span><div className="connection-line"><span className={config ? 'status-dot ready' : 'status-dot error'} />{config ? t('serverConnected') : t('noConnection')}</div><small>{window.location.host}</small></div>
+      <div className="rail-bottom">
+        <div className="rail-status">
+          <span className="rail-caption">{t('server')}</span>
+          <div className="connection-line"><span className={config ? 'status-dot ready' : 'status-dot error'} />{config ? t('serverConnected') : t('noConnection')}</div>
+          <small>{effectiveServerAddress}</small>
+        </div>
+        <div className="rail-status">
+          <span className="rail-caption">{t('xbox')}</span>
+          <div className="connection-line"><span className={`status-dot ${xboxStatus.className}`} />{xboxStatus.label}</div>
+          {xboxIp && <small>{xboxIp}</small>}
+        </div>
+      </div>
     </aside>
 
     <main className="main-content">
@@ -223,7 +289,7 @@ export default function App() {
 
       {page === 'queue' && <div className="page-content narrow"><div className="page-intro"><span className="eyebrow">{t('processingFtp')}</span><h1>{t('workInProgress')}</h1><p>{t('queueRefreshHint')}</p></div><section className="full-panel"><Jobs jobs={jobs} error={queueError} onRefresh={refreshQueue} /></section></div>}
 
-      {page === 'settings' && <div className="page-content narrow"><div className="page-intro"><span className="eyebrow">{t('localNetwork')}</span><h1>{t('connectXbox')}</h1><p>{t('ftpDescription')}</p></div><section className="settings-panel"><div className="section-heading"><div><span className="eyebrow">XBOX 360</span><h2>{t('xboxAddress')}</h2></div></div><p>{t('xboxIpInstructions')}</p><div className="settings-form"><label className="field"><span>{t('xboxIp')}</span><input inputMode="decimal" value={ipInput} onChange={event => setIpInput(event.target.value)} placeholder="192.168.1.50" /></label><button className="button primary" onClick={saveXboxIp}>{t('saveAndTest')}</button></div>{xboxState === 'checking' && <p className="connection-message">{t('testingFtp')}</p>}{xboxState === 'connected' && <p className="connection-message success">{t('ftpConnected')}</p>}{Boolean(xboxError) && <p className="inline-error">{message(xboxError, t)}</p>}<div className="settings-note"><span className="eyebrow">{t('godsendServer')}</span><strong>{window.location.origin}</strong><small>{t('sameOriginApi')}</small></div></section></div>}
+      {page === 'settings' && <div className="page-content narrow"><div className="page-intro"><span className="eyebrow">{t('localNetwork')}</span><h1>{t('connectXbox')}</h1><p>{t('ftpDescription')}</p></div><section className="settings-panel"><div className="section-heading"><div><span className="eyebrow">XBOX 360</span><h2>{t('xboxAddress')}</h2></div></div><p>{t('xboxIpInstructions')}</p><div className="settings-form"><label className="field"><span>{t('xboxIp')}</span><input inputMode="decimal" value={ipInput} onChange={event => setIpInput(event.target.value)} placeholder="192.168.1.50" /></label><button className="button primary" onClick={saveXboxIp}>{t('saveAndTest')}</button></div>{xboxState === 'checking' && <p className="connection-message">{t('testingFtp')}</p>}{xboxState === 'connected' && <p className="connection-message success">{t('ftpConnected')}</p>}{Boolean(xboxError) && <p className="inline-error">{message(xboxError, t)}</p>}<div className="settings-note"><span className="eyebrow">{t('godsendServer')}</span><strong>{effectiveServerAddress}</strong><small>{t('sameOriginApi')}</small></div><div className="server-settings"><span className="eyebrow">{t('server')}</span><h2>{t('serverAddress')}</h2><p>{t('serverAddressInstructions')}</p><div className="settings-form"><label className="field"><span>{t('serverAddress')}</span><input type="url" inputMode="url" value={serverInput} onChange={event => setServerInput(event.target.value)} placeholder={window.location.origin} /></label><button className="button primary" disabled={serverSaving} onClick={() => void saveServerAddress()}>{serverSaving ? t('connecting') : t('saveAndConnect')}</button></div><div className="server-actions"><small>{t('defaultServer', { address: window.location.origin })}</small><button className="text-button" onClick={() => void saveServerAddress('')}>{t('useDefaultServer')}</button></div>{Boolean(serverInputError) && <p className="inline-error">{message(serverInputError, t)}</p>}</div></section></div>}
     </main>
     {selected && <QueueDialog game={selected} platform={platform} source={source} ip={xboxIp} defaultDrive={config?.default_drive || 'Hdd1:'} onClose={() => setSelected(null)} onQueued={status => { setSelected(null); setNotice(status === 'already_processing' ? 'alreadyProcessing' : status === 'already_ready' ? 'alreadyReady' : 'gameQueued'); void refreshQueue() }} />}
   </div>

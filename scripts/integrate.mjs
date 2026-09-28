@@ -14,16 +14,24 @@ if (!upstream) {
 const dist = path.join(project, 'dist')
 const handlers = path.join(upstream, 'src/server/interfaces/http')
 const router = path.join(handlers, 'router.go')
+const middleware = path.join(handlers, 'middleware.go')
 const assets = path.join(handlers, 'webui')
 
 try {
   await stat(path.join(dist, 'index.html'))
   await stat(router)
+  await stat(middleware)
   const source = await readFile(router, 'utf8')
+  const middlewareSource = await readFile(middleware, 'utf8')
   const marker = '\tregisterWebUI(mux)\n'
   const anchor = '\treturn mux\n'
+  const corsMarker = '\t\twebCORS(w, r)\n'
+  const corsAnchor = '\treturn func(w stdhttp.ResponseWriter, r *stdhttp.Request) {\n'
   if (!source.includes(marker) && !source.includes(anchor)) {
     throw new Error('Could not find the integration point in router.go. Check the GODsend version.')
+  }
+  if (!middlewareSource.includes(corsMarker) && !middlewareSource.includes(corsAnchor)) {
+    throw new Error('Could not find the middleware integration point. Check the GODsend version.')
   }
 
   await rm(assets, { recursive: true, force: true })
@@ -32,6 +40,10 @@ try {
   await cp(path.join(project, 'integration/serve_webui.go'), path.join(handlers, 'serve_webui.go'))
   await cp(path.join(project, 'integration/serve_webui_test.go'), path.join(handlers, 'serve_webui_test.go'))
   if (!source.includes(marker)) await writeFile(router, source.replace(anchor, `${marker}${anchor}`))
+  if (!middlewareSource.includes(corsMarker)) {
+    const preflight = `${corsMarker}\t\tif r.Method == stdhttp.MethodOptions {\n\t\t\tw.WriteHeader(stdhttp.StatusNoContent)\n\t\t\treturn\n\t\t}\n`
+    await writeFile(middleware, middlewareSource.replace(corsAnchor, `${corsAnchor}${preflight}`))
+  }
   console.log(`Web UI integrated into ${upstream}. Build the Go backend to serve /ui/.`)
 } catch (error) {
   console.error(error.message)

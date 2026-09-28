@@ -42,7 +42,7 @@ Open `http://localhost:5173/ui/`. Vite proxies API calls to `http://10.77.15.115
 GODSEND_DEV_BACKEND=http://192.168.1.10:8080 npm run dev
 ```
 
-Set the Xbox IP on the **Connection** page. It is stored only in this browser. A transfer starts only after selecting **Add to queue** in the game dialog.
+Set the Xbox IP on the **Connection** page. Its connection status is shown in the sidebar and the address is stored only in this browser. The same page can point the web UI at another GODsend HTTP server; the selected server is tested before it replaces the default address. A transfer starts only after selecting **Add to queue** in the game dialog.
 
 ## Embed in the original Go binary
 
@@ -59,6 +59,6 @@ The integration script copies `dist/` to `src/server/interfaces/http/webui/`, ad
 npm run build:server:linux:x64
 ```
 
-The resulting binary serves the UI at `http://<server>:8080/ui/` and redirects `/` there. The UI and API share an origin, so production needs no CORS proxy. Reapply the integration after updating the upstream checkout.
+The resulting binary serves the UI at `http://<server>:8080/ui/` and redirects `/` there. The integration also enables CORS for the GODsend API, allowing a web UI hosted elsewhere to use a configured server address. Reapply the integration after updating the upstream checkout.
 
 The GODsend API has no authentication. Keep port 8080 on a trusted LAN, or add authentication at a reverse proxy before exposing it elsewhere.
