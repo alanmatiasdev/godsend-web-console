@@ -7,7 +7,7 @@ const project = path.resolve(here, '..')
 const upstream = process.argv[2] && path.resolve(process.argv[2])
 
 if (!upstream) {
-  console.error('Uso: npm run integrate -- /caminho/para/GODSend-360')
+  console.error('Usage: npm run integrate -- /path/to/GODSend-360')
   process.exit(1)
 }
 
@@ -23,7 +23,7 @@ try {
   const marker = '\tregisterWebUI(mux)\n'
   const anchor = '\treturn mux\n'
   if (!source.includes(marker) && !source.includes(anchor)) {
-    throw new Error('Não foi possível localizar o ponto de integração em router.go. Verifique a versão do GODSend.')
+    throw new Error('Could not find the integration point in router.go. Check the GODsend version.')
   }
 
   await rm(assets, { recursive: true, force: true })
@@ -32,7 +32,7 @@ try {
   await cp(path.join(project, 'integration/serve_webui.go'), path.join(handlers, 'serve_webui.go'))
   await cp(path.join(project, 'integration/serve_webui_test.go'), path.join(handlers, 'serve_webui_test.go'))
   if (!source.includes(marker)) await writeFile(router, source.replace(anchor, `${marker}${anchor}`))
-  console.log(`Interface incorporada em ${upstream}. Compile o backend Go para servir /ui/.`)
+  console.log(`Web UI integrated into ${upstream}. Build the Go backend to serve /ui/.`)
 } catch (error) {
   console.error(error.message)
   process.exit(1)

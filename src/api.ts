@@ -3,6 +3,9 @@ export type InstallType = 'god' | 'content' | 'xex'
 export type Job = { game: string; state: string; message: string }
 export type ServerConfig = { default_drive?: string; custom_god_path?: string; custom_xex_path?: string }
 export type BrowseResult = { games: string[]; loading?: { loaded: number; total: number } }
+export class ApiError extends Error {
+  constructor(public code: 'timeout' | 'network' | 'localUnavailable') { super(code) }
+}
 
 async function request(path: string, init?: RequestInit): Promise<Response> {
   const controller = new AbortController()
@@ -19,7 +22,8 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
     }
     return response
   } catch (error) {
-    if (controller.signal.aborted) throw new Error('O servidor demorou para responder.')
+    if (controller.signal.aborted) throw new ApiError('timeout')
+    if (error instanceof TypeError) throw new ApiError('network')
     throw error
   } finally {
     clearTimeout(timeout)
@@ -83,6 +87,6 @@ export async function queueGame(args: {
     source, install_type: installType,
   }))).json()
   if (result.error) throw new Error(result.error)
-  if (result.status === 'local_unavailable') throw new Error(result.message || 'ISO local indisponível.')
+  if (result.status === 'local_unavailable') throw new ApiError('localUnavailable')
   return result.status || 'triggered'
 }

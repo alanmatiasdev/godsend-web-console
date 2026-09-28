@@ -1,29 +1,38 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   browse, getConfig, getDiscInfo, getDrives, getQueue, pingXbox, queueGame,
-  type BrowseResult, type InstallType, type Job, type ServerConfig, type Source,
+  ApiError, type BrowseResult, type InstallType, type Job, type ServerConfig, type Source,
 } from './api'
+import { useI18n, type Translate, type TranslationKey } from './i18n'
 
 const platforms = [
-  { id: 'xbox360', label: 'Xbox 360' },
-  { id: 'xbox', label: 'Xbox original' },
-  { id: 'xbla', label: 'XBLA' },
-  { id: 'digital', label: 'Digital' },
-  { id: 'dlc', label: 'DLC' },
-  { id: 'xblig', label: 'Indie' },
-  { id: 'games', label: 'Games Archive' },
-]
+  { id: 'xbox360', label: 'platformXbox360' },
+  { id: 'xbox', label: 'platformXbox' },
+  { id: 'xbla', label: 'platformXbla' },
+  { id: 'digital', label: 'platformDigital' },
+  { id: 'dlc', label: 'platformDlc' },
+  { id: 'xblig', label: 'platformXblig' },
+  { id: 'games', label: 'platformGames' },
+] satisfies { id: string; label: TranslationKey }[]
 
-const sources: { id: Source; label: string }[] = [
-  { id: 'local', label: 'Arquivos locais' },
-  { id: 'minerva', label: 'Minerva' },
-  { id: 'ia', label: 'Internet Archive' },
+const sources: { id: Source; label: TranslationKey }[] = [
+  { id: 'local', label: 'sourceLocal' },
+  { id: 'minerva', label: 'sourceMinerva' },
+  { id: 'ia', label: 'sourceIa' },
 ]
 
 type Page = 'catalog' | 'queue' | 'settings'
 
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : 'Falha desconhecida.'
+class LocalizedError extends Error {
+  constructor(public key: TranslationKey) { super(key) }
+}
+
+function message(error: unknown, t: Translate): string {
+  if (error instanceof LocalizedError) return t(error.key)
+  if (error instanceof ApiError) {
+    return t(error.code === 'timeout' ? 'requestTimeout' : error.code === 'network' ? 'networkError' : 'localIsoUnavailable')
+  }
+  return error instanceof Error ? error.message : t('unknownError')
 }
 
 function isIp(value: string): boolean {
@@ -31,21 +40,23 @@ function isIp(value: string): boolean {
   return parts.length === 4 && parts.every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255)
 }
 
-function stateLabel(state: string): string {
-  return ({ Processing: 'Em andamento', Ready: 'Pronto', Error: 'Erro', Idle: 'Aguardando' } as Record<string, string>)[state] || state
+function stateLabel(state: string, t: Translate): string {
+  const key = ({ Processing: 'stateProcessing', Ready: 'stateReady', Error: 'stateError', Idle: 'stateIdle' } as Record<string, TranslationKey>)[state]
+  return key ? t(key) : state
 }
 
-function Jobs({ jobs, error, onRefresh }: { jobs: Job[]; error: string; onRefresh: () => void }) {
+function Jobs({ jobs, error, onRefresh }: { jobs: Job[]; error: unknown; onRefresh: () => void }) {
+  const { t } = useI18n()
   return <div className="jobs-list">
     <div className="section-heading">
-      <div><span className="eyebrow">ATIVIDADE</span><h2>Fila de trabalho</h2></div>
-      <button className="icon-button" onClick={onRefresh} aria-label="Atualizar fila" title="Atualizar fila">↻</button>
+      <div><span className="eyebrow">{t('activity')}</span><h2>{t('jobQueue')}</h2></div>
+      <button className="icon-button" onClick={onRefresh} aria-label={t('refreshQueue')} title={t('refreshQueue')}>↻</button>
     </div>
-    {error && <p className="inline-error">{error}</p>}
-    {!error && jobs.length === 0 && <div className="empty-jobs"><span className="empty-mark">○</span><p>Nenhum trabalho na fila.</p><small>Os jogos enviados aparecem aqui.</small></div>}
+    {Boolean(error) && <p className="inline-error">{message(error, t)}</p>}
+    {!Boolean(error) && jobs.length === 0 && <div className="empty-jobs"><span className="empty-mark">○</span><p>{t('noJobs')}</p><small>{t('sentGamesAppearHere')}</small></div>}
     {jobs.map(job => <article className="job" key={job.game}>
       <div className="job-head"><span className={`status-dot ${job.state.toLowerCase()}`} /><strong>{job.game}</strong></div>
-      <div className="job-meta"><span>{stateLabel(job.state)}</span><span>{job.message}</span></div>
+      <div className="job-meta"><span>{stateLabel(job.state, t)}</span><span>{job.message}</span></div>
     </article>)}
   </div>
 }
@@ -54,12 +65,13 @@ function QueueDialog({ game, platform, source, ip, defaultDrive, onClose, onQueu
   game: string; platform: string; source: Source; ip: string; defaultDrive: string;
   onClose: () => void; onQueued: (status: string) => void
 }) {
+  const { t } = useI18n()
   const [drives, setDrives] = useState<string[]>([])
   const [drive, setDrive] = useState(defaultDrive || 'Hdd1:')
   const [installType, setInstallType] = useState<InstallType>('god')
   const [notes, setNotes] = useState('')
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
+  const [error, setError] = useState<unknown>(null)
   const hasMethods = source === 'local' || ['xbox360', 'xbox', 'games'].includes(platform)
 
   useEffect(() => {
@@ -74,38 +86,39 @@ function QueueDialog({ game, platform, source, ip, defaultDrive, onClose, onQueu
   }, [game, ip, hasMethods])
 
   async function submit() {
-    if (!isIp(ip)) { setError('Informe o IP do Xbox em Conexão antes de enviar.'); return }
-    setBusy(true); setError('')
+    if (!isIp(ip)) { setError(new LocalizedError('ipRequiredBeforeQueue')); return }
+    setBusy(true); setError(null)
     try {
       const status = await queueGame({ game, platform, source, ip: ip.trim(), drive, installType: hasMethods ? installType : 'god' })
       onQueued(status)
-    } catch (cause) { setError(message(cause)) }
+    } catch (cause) { setError(cause) }
     finally { setBusy(false) }
   }
 
   return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
     <section className="modal" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
-      <div className="modal-head"><span className="eyebrow">ENVIAR PARA O XBOX</span><button className="icon-button" aria-label="Fechar" onClick={onClose}>×</button></div>
+      <div className="modal-head"><span className="eyebrow">{t('sendToXbox')}</span><button className="icon-button" aria-label={t('close')} onClick={onClose}>×</button></div>
       <h2 id="dialog-title">{game}</h2>
-      <p className="modal-subtitle">{source === 'local' ? 'Biblioteca local' : `${sources.find(item => item.id === source)?.label} · ${platforms.find(item => item.id === platform)?.label}`}</p>
-      <label className="field"><span>Unidade de destino</span>
+      <p className="modal-subtitle">{source === 'local' ? t('localLibrary') : `${t(sources.find(item => item.id === source)?.label || 'sourceMinerva')} · ${t(platforms.find(item => item.id === platform)?.label || 'platformXbox360')}`}</p>
+      <label className="field"><span>{t('destinationDrive')}</span>
         <select value={drive} onChange={event => setDrive(event.target.value)}>
           {[...new Set([drive, defaultDrive, ...drives].filter(Boolean))].map(item => <option key={item}>{item}</option>)}
         </select>
       </label>
-      {hasMethods && <fieldset className="method-field"><legend>Formato de instalação</legend>
+      {hasMethods && <fieldset className="method-field"><legend>{t('installFormat')}</legend>
         {(['god', 'content', 'xex'] as InstallType[]).map(type => <label key={type} className={installType === type ? 'method active' : 'method'}>
           <input type="radio" name="installType" checked={installType === type} onChange={() => setInstallType(type)} />{type.toUpperCase()}
         </label>)}
       </fieldset>}
       {notes && <p className="hint">{notes}</p>}
-      {error && <p className="inline-error">{error}</p>}
-      <div className="modal-actions"><button className="button secondary" onClick={onClose}>Cancelar</button><button className="button primary" disabled={busy} onClick={submit}>{busy ? 'Enviando…' : 'Adicionar à fila'}</button></div>
+      {Boolean(error) && <p className="inline-error">{message(error, t)}</p>}
+      <div className="modal-actions"><button className="button secondary" onClick={onClose}>{t('cancel')}</button><button className="button primary" disabled={busy} onClick={submit}>{busy ? t('sending') : t('addToQueue')}</button></div>
     </section>
   </div>
 }
 
 export default function App() {
+  const { language, setLanguage, t } = useI18n()
   const [page, setPage] = useState<Page>('catalog')
   const [source, setSource] = useState<Source>('minerva')
   const [platform, setPlatform] = useState('xbox360')
@@ -113,30 +126,30 @@ export default function App() {
   const [limit, setLimit] = useState(80)
   const [catalog, setCatalog] = useState<BrowseResult>({ games: [] })
   const [catalogState, setCatalogState] = useState<'loading' | 'ready' | 'error'>('loading')
-  const [catalogError, setCatalogError] = useState('')
+  const [catalogError, setCatalogError] = useState<unknown>(null)
   const [config, setConfig] = useState<ServerConfig | null>(null)
-  const [serverError, setServerError] = useState('')
+  const [serverError, setServerError] = useState<unknown>(null)
   const [jobs, setJobs] = useState<Job[]>([])
-  const [queueError, setQueueError] = useState('')
+  const [queueError, setQueueError] = useState<unknown>(null)
   const [xboxIp, setXboxIp] = useState(() => localStorage.getItem('godsend.xboxIp') || '')
   const [ipInput, setIpInput] = useState(xboxIp)
   const [xboxState, setXboxState] = useState<'idle' | 'checking' | 'connected' | 'error'>('idle')
-  const [xboxError, setXboxError] = useState('')
+  const [xboxError, setXboxError] = useState<unknown>(null)
   const [selected, setSelected] = useState<string | null>(null)
-  const [notice, setNotice] = useState('')
+  const [notice, setNotice] = useState<TranslationKey | null>(null)
 
   const refreshConfig = useCallback(async () => {
-    try { setConfig(await getConfig()); setServerError('') }
-    catch (cause) { setConfig(null); setServerError(message(cause)) }
+    try { setConfig(await getConfig()); setServerError(null) }
+    catch (cause) { setConfig(null); setServerError(cause) }
   }, [])
   const refreshQueue = useCallback(async () => {
-    try { setJobs(await getQueue()); setQueueError('') }
-    catch (cause) { setQueueError(message(cause)) }
+    try { setJobs(await getQueue()); setQueueError(null) }
+    catch (cause) { setQueueError(cause) }
   }, [])
   const refreshCatalog = useCallback(async () => {
-    setCatalogState('loading'); setCatalogError('')
+    setCatalogState('loading'); setCatalogError(null)
     try { setCatalog(await browse(platform, source)); setCatalogState('ready') }
-    catch (cause) { setCatalogError(message(cause)); setCatalogState('error') }
+    catch (cause) { setCatalogError(cause); setCatalogState('error') }
   }, [platform, source])
 
   useEffect(() => { void refreshConfig(); void refreshQueue() }, [refreshConfig, refreshQueue])
@@ -150,7 +163,7 @@ export default function App() {
   }, [catalog.loading, page, refreshCatalog])
   useEffect(() => {
     if (!notice) return
-    const id = window.setTimeout(() => setNotice(''), 5000)
+    const id = window.setTimeout(() => setNotice(null), 5000)
     return () => clearTimeout(id)
   }, [notice])
 
@@ -158,60 +171,60 @@ export default function App() {
   const activeJobs = jobs.filter(job => job.state === 'Processing').length
 
   async function checkXbox(ip = xboxIp) {
-    if (!isIp(ip)) { setXboxError('Informe um endereço IPv4 válido.'); setXboxState('error'); return }
-    setXboxState('checking'); setXboxError('')
+    if (!isIp(ip)) { setXboxError(new LocalizedError('invalidIp')); setXboxState('error'); return }
+    setXboxState('checking'); setXboxError(null)
     try { await pingXbox(ip.trim()); setXboxState('connected') }
-    catch (cause) { setXboxError(message(cause)); setXboxState('error') }
+    catch (cause) { setXboxError(cause); setXboxState('error') }
   }
 
   function saveXboxIp() {
-    if (!isIp(ipInput)) { setXboxError('Informe um endereço IPv4 válido.'); return }
+    if (!isIp(ipInput)) { setXboxError(new LocalizedError('invalidIp')); return }
     const next = ipInput.trim()
     localStorage.setItem('godsend.xboxIp', next)
     setXboxIp(next)
-    setXboxState('idle'); setXboxError(''); setNotice('Endereço do Xbox salvo neste navegador.')
+    setXboxState('idle'); setXboxError(null); setNotice('xboxIpSaved')
     void checkXbox(next)
   }
 
   return <div className="app-shell">
     <aside className="rail">
-      <div className="brand"><div className="brand-symbol">G<span>·</span></div><div className="brand-copy"><strong>GODsend</strong><small>WEB CONSOLE</small></div></div>
+      <div className="brand"><div className="brand-symbol">G<span>·</span></div><div className="brand-copy"><strong>GODsend</strong><small>{t('brandDescriptor')}</small></div></div>
       <div className="rail-rule" />
-      <nav aria-label="Navegação principal">
-        <button className={page === 'catalog' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('catalog')}><span className="nav-glyph">▤</span>Catálogo</button>
-        <button className={page === 'queue' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('queue')}><span className="nav-glyph">◷</span>Fila {activeJobs > 0 && <span className="nav-count">{activeJobs}</span>}</button>
-        <button className={page === 'settings' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('settings')}><span className="nav-glyph">⚙</span>Conexão</button>
+      <nav aria-label={t('mainNavigation')}>
+        <button className={page === 'catalog' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('catalog')}><span className="nav-glyph">▤</span>{t('catalog')}</button>
+        <button className={page === 'queue' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('queue')}><span className="nav-glyph">◷</span>{t('queue')} {activeJobs > 0 && <span className="nav-count">{activeJobs}</span>}</button>
+        <button className={page === 'settings' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('settings')}><span className="nav-glyph">⚙</span>{t('connection')}</button>
       </nav>
-      <div className="rail-bottom"><span className="rail-caption">SERVIDOR</span><div className="connection-line"><span className={config ? 'status-dot ready' : 'status-dot error'} />{config ? 'GODsend conectado' : 'Sem conexão'}</div><small>{window.location.host}</small></div>
+      <div className="rail-bottom"><span className="rail-caption">{t('server')}</span><div className="connection-line"><span className={config ? 'status-dot ready' : 'status-dot error'} />{config ? t('serverConnected') : t('noConnection')}</div><small>{window.location.host}</small></div>
     </aside>
 
     <main className="main-content">
-      <header className="topbar"><span>GODsend / {page === 'catalog' ? 'Catálogo' : page === 'queue' ? 'Fila' : 'Conexão'}</span><div className="topbar-right"><span className="server-label">BACKEND</span><span className={config ? 'server-pill online' : 'server-pill'}>{config ? 'ONLINE' : 'OFFLINE'}</span></div></header>
-      {notice && <div className="toast" role="status">{notice}</div>}
-      {serverError && <div className="server-alert" role="alert">Não foi possível acessar o GODsend: {serverError} <button onClick={refreshConfig}>Tentar novamente</button></div>}
+      <header className="topbar"><span>GODsend / {t(page === 'catalog' ? 'catalog' : page === 'queue' ? 'queue' : 'connection')}</span><div className="topbar-right"><label className="language-control"><span>{t('language')}</span><select aria-label={t('language')} value={language} onChange={event => setLanguage(event.target.value as 'en' | 'pt-BR')}><option value="en">EN</option><option value="pt-BR">PT-BR</option></select></label><span className="server-label">{t('backend')}</span><span className={config ? 'server-pill online' : 'server-pill'}>{config ? t('online') : t('offline')}</span></div></header>
+      {notice && <div className="toast" role="status">{t(notice)}</div>}
+      {Boolean(serverError) && <div className="server-alert" role="alert">{t('serverUnavailable', { error: message(serverError, t) })} <button onClick={refreshConfig}>{t('tryAgain')}</button></div>}
 
       {page === 'catalog' && <div className="page-content">
-        <div className="page-intro"><span className="eyebrow">BIBLIOTECA / XBOX 360</span><h1>Escolha o próximo jogo.</h1><p>Explore os arquivos disponíveis e acompanhe o envio para o console.</p></div>
+        <div className="page-intro"><span className="eyebrow">{t('libraryEyebrow')}</span><h1>{t('chooseNextGame')}</h1><p>{t('exploreAvailable')}</p></div>
         <div className="catalog-layout"><section className="catalog-panel">
-          <div className="section-heading"><div><span className="eyebrow">ORIGEM</span><h2>Explorar catálogo</h2></div><button className="icon-button" onClick={refreshCatalog} title="Atualizar catálogo" aria-label="Atualizar catálogo">↻</button></div>
-          <div className="tab-row" role="group" aria-label="Origem dos jogos">{sources.map(item => <button key={item.id} className={source === item.id ? 'tab active' : 'tab'} onClick={() => setSource(item.id)}>{item.label}</button>)}</div>
-          {source !== 'local' && <div className="platform-row"><label htmlFor="platform">Plataforma</label><select id="platform" value={platform} onChange={event => setPlatform(event.target.value)}>{platforms.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}</select></div>}
-          <div className="search-row"><label className="search-field"><span aria-hidden="true">⌕</span><input value={search} onChange={event => { setSearch(event.target.value); setLimit(80) }} placeholder="Buscar pelo nome do jogo" aria-label="Buscar jogos" /></label><span className="result-count">{filtered.length} {filtered.length === 1 ? 'título' : 'títulos'}</span></div>
+          <div className="section-heading"><div><span className="eyebrow">{t('source')}</span><h2>{t('exploreCatalog')}</h2></div><button className="icon-button" onClick={refreshCatalog} title={t('refreshCatalog')} aria-label={t('refreshCatalog')}>↻</button></div>
+          <div className="tab-row" role="group" aria-label={t('gameSource')}>{sources.map(item => <button key={item.id} className={source === item.id ? 'tab active' : 'tab'} onClick={() => setSource(item.id)}>{t(item.label)}</button>)}</div>
+          {source !== 'local' && <div className="platform-row"><label htmlFor="platform">{t('platform')}</label><select id="platform" value={platform} onChange={event => setPlatform(event.target.value)}>{platforms.map(item => <option key={item.id} value={item.id}>{t(item.label)}</option>)}</select></div>}
+          <div className="search-row"><label className="search-field"><span aria-hidden="true">⌕</span><input value={search} onChange={event => { setSearch(event.target.value); setLimit(80) }} placeholder={t('searchPlaceholder')} aria-label={t('searchGames')} /></label><span className="result-count">{t(filtered.length === 1 ? 'oneTitle' : 'manyTitles', { count: filtered.length })}</span></div>
           <div className="catalog-results">
-            {catalogState === 'loading' && <div className="empty-state"><span className="empty-mark">◌</span><p>Consultando o catálogo…</p></div>}
-            {catalogState === 'error' && <div className="empty-state"><span className="empty-mark">!</span><p>Não foi possível carregar os jogos.</p><small>{catalogError}</small><button className="button secondary" onClick={refreshCatalog}>Tentar novamente</button></div>}
-            {catalogState === 'ready' && catalog.loading && <div className="empty-state"><span className="empty-mark">◌</span><p>O catálogo está sendo preparado.</p><small>{catalog.loading.loaded} de {catalog.loading.total} etapas concluídas. A lista atualiza automaticamente.</small></div>}
-            {catalogState === 'ready' && !catalog.loading && filtered.length === 0 && <div className="empty-state"><span className="empty-mark">□</span><p>{search ? 'Nenhum título corresponde à busca.' : source === 'local' ? 'Nenhum ISO na pasta Transfer.' : 'Nenhum jogo encontrado nesta origem.'}</p><small>{source === 'local' && !search ? 'Copie seus arquivos ISO para a pasta Transfer configurada no servidor.' : 'Tente outra origem ou plataforma.'}</small></div>}
-            {catalogState === 'ready' && !catalog.loading && filtered.slice(0, limit).map((game, index) => <button className="game-row" key={`${game}-${index}`} onClick={() => setSelected(game)}><span className="game-index">{String(index + 1).padStart(3, '0')}</span><span className="game-title">{game}</span><span className="game-action">Adicionar <span aria-hidden="true">↗</span></span></button>)}
-            {filtered.length > limit && <button className="load-more" onClick={() => setLimit(value => value + 80)}>Mostrar mais {Math.min(80, filtered.length - limit)} títulos</button>}
+            {catalogState === 'loading' && <div className="empty-state"><span className="empty-mark">◌</span><p>{t('loadingCatalog')}</p></div>}
+            {catalogState === 'error' && <div className="empty-state"><span className="empty-mark">!</span><p>{t('failedToLoadGames')}</p><small>{message(catalogError, t)}</small><button className="button secondary" onClick={refreshCatalog}>{t('tryAgain')}</button></div>}
+            {catalogState === 'ready' && catalog.loading && <div className="empty-state"><span className="empty-mark">◌</span><p>{t('catalogPreparing')}</p><small>{t('catalogProgress', { loaded: catalog.loading.loaded, total: catalog.loading.total })}</small></div>}
+            {catalogState === 'ready' && !catalog.loading && filtered.length === 0 && <div className="empty-state"><span className="empty-mark">□</span><p>{t(search ? 'noSearchMatches' : source === 'local' ? 'noLocalIso' : 'noGamesFromSource')}</p><small>{t(source === 'local' && !search ? 'addIsoToTransfer' : 'tryOtherSource')}</small></div>}
+            {catalogState === 'ready' && !catalog.loading && filtered.slice(0, limit).map((game, index) => <button className="game-row" key={`${game}-${index}`} onClick={() => setSelected(game)}><span className="game-index">{String(index + 1).padStart(3, '0')}</span><span className="game-title">{game}</span><span className="game-action">{t('add')} <span aria-hidden="true">↗</span></span></button>)}
+            {filtered.length > limit && <button className="load-more" onClick={() => setLimit(value => value + 80)}>{t('showMoreTitles', { count: Math.min(80, filtered.length - limit) })}</button>}
           </div>
-        </section><aside className="activity-panel"><Jobs jobs={jobs.slice(0, 6)} error={queueError} onRefresh={refreshQueue} />{jobs.length > 6 && <button className="view-all" onClick={() => setPage('queue')}>Ver fila completa →</button>}<div className="info-block"><span className="eyebrow">DESTINO</span><strong>{xboxIp || 'Xbox não configurado'}</strong><small>{xboxIp ? `Unidade padrão: ${config?.default_drive || 'Hdd1:'}` : 'Configure o endereço do console para enviar jogos.'}</small><button onClick={() => setPage('settings')}>Abrir conexão →</button></div></aside></div>
+        </section><aside className="activity-panel"><Jobs jobs={jobs.slice(0, 6)} error={queueError} onRefresh={refreshQueue} />{jobs.length > 6 && <button className="view-all" onClick={() => setPage('queue')}>{t('viewAllJobs')}</button>}<div className="info-block"><span className="eyebrow">{t('destination')}</span><strong>{xboxIp || t('xboxNotConfigured')}</strong><small>{xboxIp ? t('defaultDrive', { drive: config?.default_drive || 'Hdd1:' }) : t('configureConsole')}</small><button onClick={() => setPage('settings')}>{t('openConnection')}</button></div></aside></div>
       </div>}
 
-      {page === 'queue' && <div className="page-content narrow"><div className="page-intro"><span className="eyebrow">PROCESSAMENTO / FTP</span><h1>Trabalhos em andamento.</h1><p>A fila é atualizada a cada cinco segundos.</p></div><section className="full-panel"><Jobs jobs={jobs} error={queueError} onRefresh={refreshQueue} /></section></div>}
+      {page === 'queue' && <div className="page-content narrow"><div className="page-intro"><span className="eyebrow">{t('processingFtp')}</span><h1>{t('workInProgress')}</h1><p>{t('queueRefreshHint')}</p></div><section className="full-panel"><Jobs jobs={jobs} error={queueError} onRefresh={refreshQueue} /></section></div>}
 
-      {page === 'settings' && <div className="page-content narrow"><div className="page-intro"><span className="eyebrow">REDE LOCAL</span><h1>Conecte seu Xbox.</h1><p>O GODsend usa o FTP do Aurora para instalar os jogos no console.</p></div><section className="settings-panel"><div className="section-heading"><div><span className="eyebrow">XBOX 360</span><h2>Endereço do console</h2></div></div><p>Informe o IP do Xbox na mesma rede do servidor. O endereço fica salvo apenas neste navegador.</p><div className="settings-form"><label className="field"><span>IP do Xbox</span><input inputMode="decimal" value={ipInput} onChange={event => setIpInput(event.target.value)} placeholder="192.168.1.50" /></label><button className="button primary" onClick={saveXboxIp}>Salvar e testar</button></div>{xboxState === 'checking' && <p className="connection-message">Testando conexão FTP…</p>}{xboxState === 'connected' && <p className="connection-message success">FTP do Xbox conectado.</p>}{xboxError && <p className="inline-error">{xboxError}</p>}<div className="settings-note"><span className="eyebrow">SERVIDOR GODSEND</span><strong>{window.location.origin}</strong><small>Esta interface usa a API HTTP do servidor que a distribui.</small></div></section></div>}
+      {page === 'settings' && <div className="page-content narrow"><div className="page-intro"><span className="eyebrow">{t('localNetwork')}</span><h1>{t('connectXbox')}</h1><p>{t('ftpDescription')}</p></div><section className="settings-panel"><div className="section-heading"><div><span className="eyebrow">XBOX 360</span><h2>{t('xboxAddress')}</h2></div></div><p>{t('xboxIpInstructions')}</p><div className="settings-form"><label className="field"><span>{t('xboxIp')}</span><input inputMode="decimal" value={ipInput} onChange={event => setIpInput(event.target.value)} placeholder="192.168.1.50" /></label><button className="button primary" onClick={saveXboxIp}>{t('saveAndTest')}</button></div>{xboxState === 'checking' && <p className="connection-message">{t('testingFtp')}</p>}{xboxState === 'connected' && <p className="connection-message success">{t('ftpConnected')}</p>}{Boolean(xboxError) && <p className="inline-error">{message(xboxError, t)}</p>}<div className="settings-note"><span className="eyebrow">{t('godsendServer')}</span><strong>{window.location.origin}</strong><small>{t('sameOriginApi')}</small></div></section></div>}
     </main>
-    {selected && <QueueDialog game={selected} platform={platform} source={source} ip={xboxIp} defaultDrive={config?.default_drive || 'Hdd1:'} onClose={() => setSelected(null)} onQueued={status => { setSelected(null); setNotice(status === 'already_processing' ? 'O jogo já está em processamento.' : status === 'already_ready' ? 'O jogo já está pronto.' : 'Jogo adicionado à fila.'); void refreshQueue() }} />}
+    {selected && <QueueDialog game={selected} platform={platform} source={source} ip={xboxIp} defaultDrive={config?.default_drive || 'Hdd1:'} onClose={() => setSelected(null)} onQueued={status => { setSelected(null); setNotice(status === 'already_processing' ? 'alreadyProcessing' : status === 'already_ready' ? 'alreadyReady' : 'gameQueued'); void refreshQueue() }} />}
   </div>
 }
