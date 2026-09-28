@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import {
-  browse, getConfig, getDiscInfo, getDrives, getQueue, pingXbox, queueGame,
-  ApiError, setApiBaseUrl, type BrowseResult, type InstallType, type Job, type ServerConfig, type Source,
+  browse, getConfig, getDiscInfo, getDrives, pingXbox, queueGame,
+  ApiError, getUnifiedQueue, removeFtpJob, removeGameJob, setApiBaseUrl, type BrowseResult, type InstallType, type Job, type ServerConfig, type Source,
 } from './api'
 import { useI18n, type Translate, type TranslationKey } from './i18n'
-import { ContentManager, FtpManager, IsoTools, SaveManager } from './management'
+import { ContentManager, FtpManager, IsoTools, SaveManager, XboxLibrary } from './management'
 
 const platforms = [
   { id: 'xbox360', label: 'platformXbox360' },
@@ -22,7 +22,38 @@ const sources: { id: Source; label: TranslationKey }[] = [
   { id: 'ia', label: 'sourceIa' },
 ]
 
-type Page = 'catalog' | 'queue' | 'ftp' | 'content' | 'saves' | 'iso' | 'settings'
+type Page = 'catalog' | 'queue' | 'library' | 'ftp' | 'content' | 'saves' | 'iso' | 'settings'
+type RouteState = { page: Page; source: Source; platform: string; search: string; limit: number }
+
+function readRouteState(): RouteState {
+  const params = new URLSearchParams(window.location.search)
+  const requestedPage = params.get('view') as Page | null
+  const validPages: Page[] = ['catalog', 'queue', 'library', 'ftp', 'content', 'saves', 'iso', 'settings']
+  const requestedSource = params.get('source') as Source | null
+  const validSources: Source[] = ['local', 'minerva', 'ia']
+  const requestedPlatform = params.get('platform') || 'xbox360'
+  const validPlatforms = platforms.map(item => item.id)
+  const requestedLimit = Number(params.get('limit'))
+  return {
+    page: requestedPage && validPages.includes(requestedPage) ? requestedPage : 'catalog',
+    source: requestedSource && validSources.includes(requestedSource) ? requestedSource : 'minerva',
+    platform: validPlatforms.includes(requestedPlatform) ? requestedPlatform : 'xbox360',
+    search: params.get('q') || '',
+    limit: Number.isInteger(requestedLimit) && requestedLimit >= 80 && requestedLimit <= 2000 ? requestedLimit : 80,
+  }
+}
+
+function writeRouteState(state: RouteState): void {
+  const params = new URLSearchParams(window.location.search)
+  for (const key of ['view', 'source', 'platform', 'q', 'limit']) params.delete(key)
+  if (state.page !== 'catalog') params.set('view', state.page)
+  if (state.source !== 'minerva') params.set('source', state.source)
+  if (state.platform !== 'xbox360') params.set('platform', state.platform)
+  if (state.search) params.set('q', state.search)
+  if (state.limit !== 80) params.set('limit', String(state.limit))
+  const query = params.toString()
+  window.history.replaceState(null, '', `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`)
+}
 
 class LocalizedError extends Error {
   constructor(public key: TranslationKey) { super(key) }
@@ -63,7 +94,7 @@ function stateLabel(state: string, t: Translate): string {
   return key ? t(key) : state
 }
 
-function Jobs({ jobs, error, onRefresh }: { jobs: Job[]; error: unknown; onRefresh: () => void }) {
+function Jobs({ jobs, error, onRefresh, onRemoved }: { jobs: Job[]; error: unknown; onRefresh: () => void; onRemoved: () => void }) {
   const { t } = useI18n()
   return <div className="jobs-list">
     <div className="section-heading">
@@ -72,9 +103,10 @@ function Jobs({ jobs, error, onRefresh }: { jobs: Job[]; error: unknown; onRefre
     </div>
     {Boolean(error) && <p className="inline-error">{message(error, t)}</p>}
     {!Boolean(error) && jobs.length === 0 && <div className="empty-jobs"><span className="empty-mark">○</span><p>{t('noJobs')}</p><small>{t('sentGamesAppearHere')}</small></div>}
-    {jobs.map(job => <article className="job" key={job.game}>
+    {jobs.map(job => <article className="job" key={`${job.kind || 'game'}-${job.game}`}>
       <div className="job-head"><span className={`status-dot ${job.state.toLowerCase()}`} /><strong>{job.game}</strong></div>
-      <div className="job-meta"><span>{stateLabel(job.state, t)}</span><span>{job.message}</span></div>
+      <div className="job-meta"><span>{job.kind === 'ftp' ? 'FTP' : t('gameJob')} · {stateLabel(job.state, t)}{job.progress !== undefined && ` · ${job.progress}%`}</span><span>{job.message}</span></div>
+      {['Ready', 'Error', 'Idle'].includes(job.state) && <button className="text-button" onClick={() => { const action = job.kind === 'ftp' && job.removeId !== undefined ? removeFtpJob(job.removeId) : removeGameJob(job.game); void action.then(onRemoved) }}>{t('remove')}</button>}
     </article>)}
   </div>
 }
@@ -137,11 +169,11 @@ function QueueDialog({ game, platform, source, ip, defaultDrive, onClose, onQueu
 
 export default function App() {
   const { language, setLanguage, t } = useI18n()
-  const [page, setPage] = useState<Page>('catalog')
-  const [source, setSource] = useState<Source>('minerva')
-  const [platform, setPlatform] = useState('xbox360')
-  const [search, setSearch] = useState('')
-  const [limit, setLimit] = useState(80)
+  const [page, setPage] = useState<Page>(() => readRouteState().page)
+  const [source, setSource] = useState<Source>(() => readRouteState().source)
+  const [platform, setPlatform] = useState(() => readRouteState().platform)
+  const [search, setSearch] = useState(() => readRouteState().search)
+  const [limit, setLimit] = useState(() => readRouteState().limit)
   const [catalog, setCatalog] = useState<BrowseResult>({ games: [] })
   const [catalogState, setCatalogState] = useState<'loading' | 'ready' | 'error'>('loading')
   const [catalogError, setCatalogError] = useState<unknown>(null)
@@ -165,7 +197,7 @@ export default function App() {
     catch (cause) { setConfig(null); setServerError(cause) }
   }, [])
   const refreshQueue = useCallback(async () => {
-    try { setJobs(await getQueue()); setQueueError(null) }
+    try { setJobs(await getUnifiedQueue()); setQueueError(null) }
     catch (cause) { setQueueError(cause) }
   }, [])
   const refreshCatalog = useCallback(async () => {
@@ -175,9 +207,21 @@ export default function App() {
   }, [platform, source])
 
   useEffect(() => { setApiBaseUrl(serverUrl) }, [serverUrl])
-  useEffect(() => { void refreshConfig(); void refreshQueue(); void refreshCatalog() }, [serverUrl, refreshConfig, refreshQueue, refreshCatalog])
+  useEffect(() => { void refreshConfig(); void refreshQueue() }, [serverUrl, refreshConfig, refreshQueue])
   useEffect(() => { const id = window.setInterval(() => void refreshConfig(), 15000); return () => clearInterval(id) }, [refreshConfig])
-  useEffect(() => { void refreshCatalog(); setSearch(''); setLimit(80) }, [refreshCatalog])
+  useEffect(() => { void refreshCatalog() }, [refreshCatalog])
+  // Persist route state before the browser can paint the updated filters. This
+  // keeps a refresh immediately after a filter change from restoring stale URL
+  // parameters.
+  useLayoutEffect(() => { writeRouteState({ page, source, platform, search, limit }) }, [page, source, platform, search, limit])
+  useEffect(() => {
+    const restoreFromUrl = () => {
+      const state = readRouteState()
+      setPage(state.page); setSource(state.source); setPlatform(state.platform); setSearch(state.search); setLimit(state.limit)
+    }
+    window.addEventListener('popstate', restoreFromUrl)
+    return () => window.removeEventListener('popstate', restoreFromUrl)
+  }, [])
   useEffect(() => { const id = window.setInterval(() => void refreshQueue(), 5000); return () => clearInterval(id) }, [refreshQueue])
   useEffect(() => {
     if (!catalog.loading || page !== 'catalog') return
@@ -249,6 +293,7 @@ export default function App() {
       <nav aria-label={t('mainNavigation')}>
         <button className={page === 'catalog' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('catalog')}><span className="nav-glyph">▤</span>{t('catalog')}</button>
         <button className={page === 'queue' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('queue')}><span className="nav-glyph">◷</span>{t('queue')} {activeJobs > 0 && <span className="nav-count">{activeJobs}</span>}</button>
+        <button className={page === 'library' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('library')}><span className="nav-glyph">◉</span>{t('xboxLibrary')}</button>
         <button className={page === 'ftp' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('ftp')}><span className="nav-glyph">▦</span>{t('ftpManager')}</button>
         <button className={page === 'content' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('content')}><span className="nav-glyph">+</span>{t('content')}</button>
         <button className={page === 'saves' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('saves')}><span className="nav-glyph">◫</span>{t('saves')}</button>
@@ -270,7 +315,7 @@ export default function App() {
     </aside>
 
     <main className="main-content">
-      <header className="topbar"><span>GODsend / {t(page === 'catalog' ? 'catalog' : page === 'queue' ? 'queue' : page === 'ftp' ? 'ftpManager' : page === 'content' ? 'content' : page === 'saves' ? 'saves' : page === 'iso' ? 'isoTools' : 'connection')}</span><div className="topbar-right"><label className="language-control"><span>{t('language')}</span><select aria-label={t('language')} value={language} onChange={event => setLanguage(event.target.value as 'en' | 'pt-BR')}><option value="en">EN</option><option value="pt-BR">PT-BR</option></select></label><span className="server-label">{t('backend')}</span><span className={config ? 'server-pill online' : 'server-pill'}>{config ? t('online') : t('offline')}</span></div></header>
+      <header className="topbar"><span>GODsend / {t(page === 'catalog' ? 'catalog' : page === 'queue' ? 'queue' : page === 'library' ? 'xboxLibrary' : page === 'ftp' ? 'ftpManager' : page === 'content' ? 'content' : page === 'saves' ? 'saves' : page === 'iso' ? 'isoTools' : 'connection')}</span><div className="topbar-right"><label className="language-control"><span>{t('language')}</span><select aria-label={t('language')} value={language} onChange={event => setLanguage(event.target.value as 'en' | 'pt-BR')}><option value="en">EN</option><option value="pt-BR">PT-BR</option></select></label><span className="server-label">{t('backend')}</span><span className={config ? 'server-pill online' : 'server-pill'}>{config ? t('online') : t('offline')}</span></div></header>
       {notice && <div className="toast" role="status">{t(notice)}</div>}
       {Boolean(serverError) && <div className="server-alert" role="alert">{t('serverUnavailable', { error: message(serverError, t) })} <button onClick={refreshConfig}>{t('tryAgain')}</button></div>}
 
@@ -289,11 +334,12 @@ export default function App() {
             {catalogState === 'ready' && !catalog.loading && filtered.slice(0, limit).map((game, index) => <button className="game-row" key={`${game}-${index}`} onClick={() => setSelected(game)}><span className="game-index">{String(index + 1).padStart(3, '0')}</span><span className="game-title">{game}</span><span className="game-action">{t('add')} <span aria-hidden="true">↗</span></span></button>)}
             {filtered.length > limit && <button className="load-more" onClick={() => setLimit(value => value + 80)}>{t('showMoreTitles', { count: Math.min(80, filtered.length - limit) })}</button>}
           </div>
-        </section><aside className="activity-panel"><Jobs jobs={jobs.slice(0, 6)} error={queueError} onRefresh={refreshQueue} />{jobs.length > 6 && <button className="view-all" onClick={() => setPage('queue')}>{t('viewAllJobs')}</button>}<div className="info-block"><span className="eyebrow">{t('destination')}</span><strong>{xboxIp || t('xboxNotConfigured')}</strong><small>{xboxIp ? t('defaultDrive', { drive: config?.default_drive || 'Hdd1:' }) : t('configureConsole')}</small><button onClick={() => setPage('settings')}>{t('openConnection')}</button></div></aside></div>
+        </section><aside className="activity-panel"><Jobs jobs={jobs.slice(0, 6)} error={queueError} onRefresh={refreshQueue} onRemoved={() => void refreshQueue()} />{jobs.length > 6 && <button className="view-all" onClick={() => setPage('queue')}>{t('viewAllJobs')}</button>}<div className="info-block"><span className="eyebrow">{t('destination')}</span><strong>{xboxIp || t('xboxNotConfigured')}</strong><small>{xboxIp ? t('defaultDrive', { drive: config?.default_drive || 'Hdd1:' }) : t('configureConsole')}</small><button onClick={() => setPage('settings')}>{t('openConnection')}</button></div></aside></div>
       </div>}
 
-      {page === 'queue' && <div className="page-content narrow"><div className="page-intro"><span className="eyebrow">{t('processingFtp')}</span><h1>{t('workInProgress')}</h1><p>{t('queueRefreshHint')}</p></div><section className="full-panel"><Jobs jobs={jobs} error={queueError} onRefresh={refreshQueue} /></section></div>}
+      {page === 'queue' && <div className="page-content narrow"><div className="page-intro"><span className="eyebrow">{t('processingFtp')}</span><h1>{t('workInProgress')}</h1><p>{t('queueRefreshHint')}</p></div><section className="full-panel"><Jobs jobs={jobs} error={queueError} onRefresh={refreshQueue} onRemoved={() => void refreshQueue()} /></section></div>}
 
+      {page === 'library' && <XboxLibrary xboxIp={xboxIp} />}
       {page === 'ftp' && <FtpManager xboxIp={xboxIp} />}
       {page === 'content' && <ContentManager xboxIp={xboxIp} drive={config?.default_drive || 'Hdd1:'} />}
       {page === 'saves' && <SaveManager xboxIp={xboxIp} drive={config?.default_drive || 'auto'} />}

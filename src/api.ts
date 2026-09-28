@@ -1,10 +1,10 @@
 export type Source = 'local' | 'minerva' | 'ia'
 export type InstallType = 'god' | 'content' | 'xex'
-export type Job = { game: string; state: string; message: string }
+export type Job = { game: string; state: string; message: string; kind?: 'game' | 'ftp'; progress?: number; removeId?: number }
 export type ServerConfig = { default_drive?: string; custom_god_path?: string; custom_xex_path?: string }
 export type BrowseResult = { games: string[]; loading?: { loaded: number; total: number } }
 export type FtpEntry = { name: string; type: 'dir' | 'file'; size?: number }
-export type FtpJob = { id: number; name: string; state: string; progress?: number; error?: string }
+export type FtpJob = { id: number; name: string; state: string; progress?: number; detail?: string; speed?: string; error?: string }
 export type ContentItem = { title_id: string; content_type: string; display_name: string; file_name: string; size?: number; version?: number; source: string; source_url?: string; installed: boolean; active: boolean; drive?: string }
 export type ContentManifest = { title_id: string; game_name?: string; dlcs?: ContentItem[]; title_updates?: ContentItem[] }
 export type SaveProfile = { profile_id: string; profile_name: string; save_count?: number; last_modified?: string }
@@ -23,9 +23,9 @@ export function getApiBaseUrl(): string {
   return apiBaseUrl
 }
 
-async function request(path: string, init?: RequestInit, baseUrl = apiBaseUrl): Promise<Response> {
+async function request(path: string, init?: RequestInit, baseUrl = apiBaseUrl, timeoutMs = 12000): Promise<Response> {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 12000)
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
   try {
     const response = await fetch(baseUrl ? new URL(path, `${baseUrl}/`).toString() : path, { ...init, signal: controller.signal, cache: 'no-store' })
     if (!response.ok) {
@@ -46,12 +46,12 @@ async function request(path: string, init?: RequestInit, baseUrl = apiBaseUrl): 
   }
 }
 
-async function jsonRequest<T>(path: string, body?: unknown, method = 'POST'): Promise<T> {
+async function jsonRequest<T>(path: string, body?: unknown, method = 'POST', timeoutMs = 12000): Promise<T> {
   const response = await request(path, body === undefined ? undefined : {
     method,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  })
+  }, apiBaseUrl, timeoutMs)
   return response.json() as Promise<T>
 }
 
@@ -67,6 +67,231 @@ export async function getQueue(): Promise<Job[]> {
   const data: unknown = await (await request('/queue')).json()
   return Array.isArray(data) ? data.filter((item): item is Job =>
     typeof item?.game === 'string' && typeof item?.state === 'string' && typeof item?.message === 'string') : []
+}
+
+export async function getUnifiedQueue(): Promise<Job[]> {
+  const [gameJobs, ftpJobs] = await Promise.all([getQueue(), getFtpJobs()])
+  return [
+    ...gameJobs.map(job => ({ ...job, kind: 'game' as const })),
+    ...ftpJobs.map(job => ({
+      game: job.name,
+      state: job.state,
+      message: [job.detail, job.progress !== undefined ? `${job.progress}%` : '', job.speed, job.error].filter(Boolean).join(' · '),
+      kind: 'ftp' as const,
+      progress: job.progress,
+      removeId: job.id,
+    })),
+  ]
+}
+
+export async function removeGameJob(game: string): Promise<void> {
+  await request(query('/queue/remove', { game }), { method: 'POST' })
+}
+
+export async function ftpBatch(ip: string, ops: Array<Record<string, unknown>>, timeoutMs = 120000): Promise<Array<{ ok: boolean; data?: unknown; error?: string }>> {
+  const data = await jsonRequest<{ results?: Array<{ ok: boolean; data?: unknown; error?: string }> }>('/ftp/batch', { ip, ops }, 'POST', timeoutMs)
+  return Array.isArray(data.results) ? data.results : []
+}
+
+export async function uploadBrowserFiles(ip: string, remotePath: string, files: File[]): Promise<void> {
+  const body = new FormData()
+  body.set('ip', ip)
+  body.set('remote_path', remotePath)
+  for (const file of files) body.append('files', file, file.name)
+  await request('/webui/upload-file', { method: 'POST', body }, apiBaseUrl, 30 * 60 * 1000)
+}
+
+export async function moveXboxGame(ip: string, game: { name: string; sourceDrive: string; directory: string }, targetDrive: string): Promise<void> {
+  await jsonRequest('/ftp/move-game', { ip, game_name: game.name, src_drive: game.sourceDrive, directory: game.directory, target_drive: targetDrive })
+}
+
+export type AuroraGame = {
+  contentId: number; titleId: string; name: string; description: string; publisher: string; developer: string;
+  releaseDate: string; directory: string; discNum: number; discsInSet: number; isFavorite: boolean;
+  timesPlayed: number; lastPlayed: string | null; sourceDrive: string; gameDataDir: string;
+}
+
+export async function discoverAuroraRoot(ip: string): Promise<string> {
+  const candidates = ['/Hdd1/Aurora', '/Usb0/Apps/Aurora', '/Hdd1/Apps/Aurora', '/Usb0/Aurora', '/Usb1/Apps/Aurora', '/Usb1/Aurora', '/HddX/Aurora']
+  const ops: Array<Record<string, unknown>> = []
+  const checkIndex: number[] = []
+  for (const root of candidates) {
+    ops.push({ op: 'cd', path: '/' }, { op: 'cd', path: `${root}/Data/Databases` })
+    checkIndex.push(ops.length)
+    ops.push({ op: 'pwd' })
+  }
+  const results = await ftpBatch(ip, ops)
+  for (let index = 0; index < candidates.length; index += 1) {
+    const value = results[checkIndex[index]]?.data
+    if (typeof value === 'string' && value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() === `${candidates[index]}/Data/Databases`.toLowerCase()) return candidates[index]
+  }
+  throw new Error('Aurora database folder was not found on the common Xbox drives. Enter its root path and try again.')
+}
+
+function fromBase64(value: unknown): Uint8Array {
+  if (typeof value !== 'string') throw new Error('GODsend returned an invalid Aurora database.')
+  const binary = atob(value)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+  return bytes
+}
+
+function sqlQuery(db: import('sql.js').Database, sql: string): Array<Record<string, unknown>> {
+  const statement = db.prepare(sql)
+  const rows: Array<Record<string, unknown>> = []
+  try { while (statement.step()) rows.push(statement.getAsObject() as Record<string, unknown>) }
+  finally { statement.free() }
+  return rows
+}
+
+export async function loadAuroraLibrary(ip: string, root: string): Promise<AuroraGame[]> {
+  const base = root.replace(/\\/g, '/').replace(/\/+$/, '')
+  const dir = `${base}/Data/Databases`
+  const [contentResult, settingsResult] = await ftpBatch(ip, [
+    { op: 'download_base64', path: `${dir}/content.db` },
+    { op: 'download_base64', path: `${dir}/settings.db` },
+  ], 5 * 60 * 1000)
+  if (!contentResult?.ok) throw new Error(`Could not read Aurora content.db: ${contentResult?.error || 'FTP error'}`)
+  if (!settingsResult?.ok) throw new Error(`Could not read Aurora settings.db: ${settingsResult?.error || 'FTP error'}`)
+  const [{ default: initSqlJs }, wasm] = await Promise.all([import('sql.js'), import('sql.js/dist/sql-wasm.wasm?url')])
+  const SQL = await initSqlJs({ locateFile: () => wasm.default })
+  const contentDb = new SQL.Database(fromBase64(contentResult.data))
+  const settingsDb = new SQL.Database(fromBase64(settingsResult.data))
+  try {
+    const games = sqlQuery(contentDb, `SELECT Id, TitleId, MediaId, TitleName, Description, Publisher, Developer, ReleaseDate, Directory, ScanPathId, DiscNum, DiscsInSet FROM ContentItems ORDER BY TitleName`)
+    const scanRows = sqlQuery(settingsDb, `SELECT Id, Path FROM ScanPaths`)
+    let hiddenIds = new Set<number>()
+    let favoriteIds = new Set<number>()
+    let recent = new Map<number, { timesPlayed: number; lastPlayed: string | null }>()
+    try { hiddenIds = new Set(sqlQuery(settingsDb, 'SELECT DISTINCT ContentId FROM UserHidden').map(row => Number(row.ContentId))) } catch { /* Optional Aurora table. */ }
+    try { favoriteIds = new Set(sqlQuery(settingsDb, 'SELECT DISTINCT ContentId FROM UserFavorites').map(row => Number(row.ContentId))) } catch { /* Optional Aurora table. */ }
+    try { recent = new Map(sqlQuery(settingsDb, 'SELECT ContentId, MAX(DateTime) AS LastPlayed, COUNT(*) AS TimesPlayed FROM UserRecentGames GROUP BY ContentId').map(row => {
+      const id = Number(row.ContentId); const raw = Number(row.LastPlayed)
+      const date = raw ? new Date(raw / 10000 - 11644473600000).toISOString().slice(0, 10) : null
+      return [id, { timesPlayed: Number(row.TimesPlayed), lastPlayed: date }]
+    })) } catch { /* Optional Aurora table. */ }
+
+    const knownDrives = ['Hdd1', 'Usb0', 'Usb1', 'Usb2', 'HddX']
+    const probeOps: Array<Record<string, unknown>> = []
+    const probes: Array<{ scanId: number; drive: string; expected: string; resultIndex: number }> = []
+    const sampleDirectories = new Map<number, string>()
+    for (const row of games) {
+      const id = Number(row.ScanPathId) || 0
+      const name = String(row.Directory || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+      if (id && name && !sampleDirectories.has(id)) sampleDirectories.set(id, name)
+    }
+    const scanPaths = new Map(scanRows.map(row => [Number(row.Id), String(row.Path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')]))
+    for (const [scanId, scanPath] of scanPaths) {
+      const sample = sampleDirectories.get(scanId) || scanPath
+      const segments = sample.split('/').filter(Boolean)
+      for (const drive of knownDrives) {
+        probeOps.push({ op: 'cd', path: '/' }, { op: 'cd', path: drive })
+        for (const segment of segments) probeOps.push({ op: 'cd', path: segment })
+        const resultIndex = probeOps.length
+        probeOps.push({ op: 'pwd' })
+        probes.push({ scanId, drive, expected: `/${drive}/${segments.join('/')}`.replace(/\/+$/, ''), resultIndex })
+      }
+    }
+    const driveByScanId = new Map<number, string>()
+    if (probeOps.length) {
+      const probeResults = await ftpBatch(ip, probeOps, 120000)
+      for (const probe of probes) {
+        if (driveByScanId.has(probe.scanId)) continue
+        const pwd = probeResults[probe.resultIndex]?.data
+        if (typeof pwd === 'string' && pwd.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() === probe.expected.toLowerCase()) driveByScanId.set(probe.scanId, probe.drive)
+      }
+    }
+    return games.filter(row => !hiddenIds.has(Number(row.Id))).map(row => {
+      const id = Number(row.Id); const titleId = (Number(row.TitleId) >>> 0).toString(16).toUpperCase().padStart(8, '0')
+      return {
+        contentId: id, titleId, name: String(row.TitleName || titleId), description: String(row.Description || ''),
+        publisher: String(row.Publisher || ''), developer: String(row.Developer || ''), releaseDate: String(row.ReleaseDate || ''),
+        directory: String(row.Directory || ''), discNum: Number(row.DiscNum || 1), discsInSet: Number(row.DiscsInSet || 1),
+        isFavorite: favoriteIds.has(id), timesPlayed: recent.get(id)?.timesPlayed || 0, lastPlayed: recent.get(id)?.lastPlayed || null,
+        sourceDrive: driveByScanId.get(Number(row.ScanPathId)) || '', gameDataDir: `${titleId}_${id.toString(16).toUpperCase().padStart(8, '0')}`,
+      }
+    })
+  } finally { contentDb.close(); settingsDb.close() }
+}
+
+const artworkSlots: Record<string, { slot: number; prefix: string; group?: 'GL' | 'SS' }> = {
+  icon: { slot: 0, prefix: 'GL', group: 'GL' },
+  banner: { slot: 1, prefix: 'GL', group: 'GL' },
+  cover: { slot: 2, prefix: 'GC' },
+  background: { slot: 4, prefix: 'BK' },
+  screenshot1: { slot: 5, prefix: 'SS', group: 'SS' },
+  screenshot2: { slot: 6, prefix: 'SS', group: 'SS' },
+  screenshot3: { slot: 7, prefix: 'SS', group: 'SS' },
+  screenshot4: { slot: 8, prefix: 'SS', group: 'SS' },
+  screenshot5: { slot: 9, prefix: 'SS', group: 'SS' },
+  screenshot6: { slot: 10, prefix: 'SS', group: 'SS' },
+  screenshot7: { slot: 11, prefix: 'SS', group: 'SS' },
+  screenshot8: { slot: 12, prefix: 'SS', group: 'SS' },
+  screenshot9: { slot: 13, prefix: 'SS', group: 'SS' },
+  screenshot10: { slot: 14, prefix: 'SS', group: 'SS' },
+}
+
+function binaryToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
+  return btoa(binary)
+}
+
+function imageDataUrl(value: unknown): string | null {
+  if (typeof value !== 'string' || !value) return null
+  return `data:image/png;base64,${value}`
+}
+
+async function readAuroraAsset(ip: string, root: string, game: AuroraGame, type: string): Promise<string | null> {
+  const info = artworkSlots[type]
+  if (!info) throw new Error('Unknown Aurora artwork type.')
+  const dir = `${root.replace(/\\/g, '/').replace(/\/+$/, '')}/Data/GameData/${game.gameDataDir}`
+  const assetName = `${info.prefix}${game.titleId}.asset`
+  const result = (await ftpBatch(ip, [{ op: 'download_base64', path: `${dir}/${assetName}` }], 120000))[0]
+  if (!result?.ok || typeof result.data !== 'string') return null
+  const assetBytes = fromBase64(result.data)
+  const decoded = await request('/rxea/decode', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: assetBytes.slice().buffer as ArrayBuffer }, apiBaseUrl, 120000)
+  const data = await decoded.json() as { slots?: Array<{ slot: number; png: string }> }
+  const slot = data.slots?.find(item => item.slot === info.slot)
+  return imageDataUrl(slot?.png)
+}
+
+export async function getAuroraArtwork(ip: string, root: string, game: AuroraGame, type: string): Promise<string | null> {
+  return readAuroraAsset(ip, root, game, type)
+}
+
+export async function uploadAuroraArtwork(ip: string, root: string, game: AuroraGame, type: string, file: File): Promise<void> {
+  const info = artworkSlots[type]
+  if (!info) throw new Error('Unknown Aurora artwork type.')
+  if (!game.gameDataDir || !/^[0-9A-F]{8}$/i.test(game.titleId)) throw new Error('Aurora game database information is incomplete.')
+  if (file.size > 16 * 1024 * 1024) throw new Error('Choose an image smaller than 16 MB.')
+  const image = new Uint8Array(await file.arrayBuffer())
+  let encodedAsset: Uint8Array
+  if (info.group) {
+    const dir = `${root.replace(/\\/g, '/').replace(/\/+$/, '')}/Data/GameData/${game.gameDataDir}`
+    const assetPath = `${dir}/${info.prefix}${game.titleId}.asset`
+    const result = (await ftpBatch(ip, [{ op: 'download_base64', path: assetPath }], 120000))[0]
+    const slots: Array<{ slot: number; png: string }> = []
+    if (result?.ok && typeof result.data === 'string') {
+      const priorBytes = fromBase64(result.data)
+      const prior = await request('/rxea/decode', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: priorBytes.slice().buffer as ArrayBuffer }, apiBaseUrl, 120000)
+      const decoded = await prior.json() as { slots?: Array<{ slot: number; png: string }> }
+      for (const slot of decoded.slots || []) if (slot.slot !== info.slot) slots.push({ slot: slot.slot, png: slot.png })
+    }
+    slots.push({ slot: info.slot, png: binaryToBase64(image) })
+    const encoded = await request('/rxea/encode-multi', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ slots }) }, apiBaseUrl, 120000)
+    encodedAsset = new Uint8Array(await encoded.arrayBuffer())
+  } else {
+    const encoded = await request(`/rxea/encode?slot=${info.slot}`, { method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: image.slice().buffer as ArrayBuffer }, apiBaseUrl, 120000)
+    encodedAsset = new Uint8Array(await encoded.arrayBuffer())
+  }
+  const dir = `${root.replace(/\\/g, '/').replace(/\/+$/, '')}/Data/GameData/${game.gameDataDir}`
+  const assetPath = `${dir}/${info.prefix}${game.titleId}.asset`
+  const results = await ftpBatch(ip, [
+    { op: 'ensure_dir', path: dir },
+    { op: 'upload_base64', path: assetPath, data: binaryToBase64(encodedAsset!) },
+  ], 120000)
+  if (!results[1]?.ok) throw new Error(results[1]?.error || 'Could not upload artwork to the Xbox.')
 }
 
 export async function browse(platform: string, source: Source): Promise<BrowseResult> {
@@ -158,6 +383,9 @@ export async function listSaves(ip: string, drive: string, titleId: string, prof
 export async function backupAllSaves(ip: string, drive: string): Promise<void> { await jsonRequest('/saves/backup-all', { ip, drive }) }
 export async function downloadSave(ip: string, drive: string, titleId: string, profileId: string, gameName: string): Promise<void> { await jsonRequest('/saves/download', { ip, drive, title_id: titleId, profile_id: profileId, game_name: gameName }) }
 export async function deleteSave(ip: string, drive: string, titleId: string, profileId: string): Promise<void> { await jsonRequest('/saves/delete', { ip, drive, title_id: titleId, profile_id: profileId }) }
+export async function copySave(ip: string, drive: string, titleId: string, srcProfile: string, dstProfile: string, useKeyVault: boolean): Promise<void> {
+  await jsonRequest('/saves/copy', { ip, drive, title_id: titleId, src_profile: srcProfile, dst_profile: dstProfile, use_keyvault: useKeyVault })
+}
 
 export type IsoInfo = { titleId: string; mediaId: string; discNumber: number; discCount: number; isOriginalXbox: boolean; displayName: string }
 export async function probeIso(isoPath: string): Promise<IsoInfo> { return jsonRequest('/tools/probe-iso', { isoPath }) }

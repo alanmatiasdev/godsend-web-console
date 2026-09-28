@@ -24,6 +24,7 @@ try {
   const source = await readFile(router, 'utf8')
   const middlewareSource = await readFile(middleware, 'utf8')
   const marker = '\tregisterWebUI(mux)\n'
+  const uploadRoute = '\tmux.HandleFunc("/webui/upload-file", d.wrap(d.handleWebUIUpload))\n'
   const anchor = '\treturn mux\n'
   const corsMarker = '\t\twebCORS(w, r)\n'
   const corsAnchor = '\treturn func(w stdhttp.ResponseWriter, r *stdhttp.Request) {\n'
@@ -39,7 +40,14 @@ try {
   await cp(dist, assets, { recursive: true })
   await cp(path.join(project, 'integration/serve_webui.go'), path.join(handlers, 'serve_webui.go'))
   await cp(path.join(project, 'integration/serve_webui_test.go'), path.join(handlers, 'serve_webui_test.go'))
-  if (!source.includes(marker)) await writeFile(router, source.replace(anchor, `${marker}${anchor}`))
+  await cp(path.join(project, 'integration/webui_upload.go'), path.join(handlers, 'webui_upload.go'))
+  let updatedRouter = source
+  if (!updatedRouter.includes(uploadRoute)) {
+    const insertionPoint = updatedRouter.includes(marker) ? marker : anchor
+    updatedRouter = updatedRouter.replace(insertionPoint, `${uploadRoute}${insertionPoint}`)
+  }
+  if (!updatedRouter.includes(marker)) updatedRouter = updatedRouter.replace(anchor, `${marker}${anchor}`)
+  if (updatedRouter !== source) await writeFile(router, updatedRouter)
   if (!middlewareSource.includes(corsMarker)) {
     const preflight = `${corsMarker}\t\tif r.Method == stdhttp.MethodOptions {\n\t\t\tw.WriteHeader(stdhttp.StatusNoContent)\n\t\t\treturn\n\t\t}\n`
     await writeFile(middleware, middlewareSource.replace(corsAnchor, `${corsAnchor}${preflight}`))
