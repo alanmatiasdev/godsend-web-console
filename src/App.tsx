@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
-  addToWishlist, browse, enqueueGame, getConfig, getDiscInfo, getDrives, pingXbox,
-  ApiError, getUnifiedQueue, removeFtpJob, removeGameJob, setApiBaseUrl, type BrowseResult, type InstallType, type Job, type ServerConfig, type Source,
+  addToWishlist, browse, enqueueGame, getConfig, getDiscInfo, getDrives, getRomSystems, pingXbox, searchArtwork,
+  ApiError, getUnifiedQueue, removeFtpJob, removeGameJob, setApiBaseUrl, type AuroraGame, type BrowseResult, type InstallType, type Job, type ServerConfig, type Source,
 } from './api'
 import { useI18n, type Translate, type TranslationKey } from './i18n'
 import { ContentManager, FtpManager, IsoTools, SaveManager, XboxLibrary } from './management'
 import { IsoUpload, WaitingQueue, Wishlist, useScheduler } from './queue'
+import { ServerTools } from './settings-tools'
 
 const platforms = [
   { id: 'xbox360', label: 'platformXbox360' },
@@ -21,6 +22,7 @@ const sources: { id: Source; label: TranslationKey }[] = [
   { id: 'local', label: 'sourceLocal' },
   { id: 'minerva', label: 'sourceMinerva' },
   { id: 'ia', label: 'sourceIa' },
+  { id: 'rom', label: 'sourceRom' },
 ]
 
 type Page = 'catalog' | 'queue' | 'wishlist' | 'library' | 'ftp' | 'content' | 'saves' | 'iso' | 'settings'
@@ -31,14 +33,15 @@ function readRouteState(): RouteState {
   const requestedPage = params.get('view') as Page | null
   const validPages: Page[] = ['catalog', 'queue', 'wishlist', 'library', 'ftp', 'content', 'saves', 'iso', 'settings']
   const requestedSource = params.get('source') as Source | null
-  const validSources: Source[] = ['local', 'minerva', 'ia']
-  const requestedPlatform = params.get('platform') || 'xbox360'
+  const validSources: Source[] = ['local', 'minerva', 'ia', 'rom']
+  const source = requestedSource && validSources.includes(requestedSource) ? requestedSource : 'minerva'
+  const requestedPlatform = params.get('platform') || (source === 'rom' ? 'rom_nes' : 'xbox360')
   const validPlatforms = platforms.map(item => item.id)
   const requestedLimit = Number(params.get('limit'))
   return {
     page: requestedPage && validPages.includes(requestedPage) ? requestedPage : 'catalog',
-    source: requestedSource && validSources.includes(requestedSource) ? requestedSource : 'minerva',
-    platform: validPlatforms.includes(requestedPlatform) ? requestedPlatform : 'xbox360',
+    source,
+    platform: validPlatforms.includes(requestedPlatform) || /^rom_[a-z0-9]+$/.test(requestedPlatform) ? requestedPlatform : source === 'rom' ? 'rom_nes' : 'xbox360',
     search: params.get('q') || '',
     limit: Number.isInteger(requestedLimit) && requestedLimit >= 80 && requestedLimit <= 2000 ? requestedLimit : 80,
   }
@@ -121,6 +124,7 @@ function QueueDialog({ game, platform, source, ip, defaultDrive, onClose, onQueu
   const [drive, setDrive] = useState(defaultDrive || 'Hdd1:')
   const [installType, setInstallType] = useState<InstallType>('god')
   const [notes, setNotes] = useState('')
+  const [cover, setCover] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
   const hasMethods = source === 'local' || ['xbox360', 'xbox', 'games'].includes(platform)
@@ -135,6 +139,12 @@ function QueueDialog({ game, platform, source, ip, defaultDrive, onClose, onQueu
     })
     return () => { active = false }
   }, [game, ip, hasMethods])
+  useEffect(() => {
+    let active = true
+    setCover(null)
+    if (source !== 'rom') void searchArtwork('cover', '', game).then(results => { if (active) setCover(results[0]?.image || null) }).catch(() => {})
+    return () => { active = false }
+  }, [game, source])
 
   async function submit(target: 'queue' | 'wishlist') {
     if (!isIp(ip)) { setError(new LocalizedError('ipRequiredBeforeQueue')); return }
@@ -151,7 +161,9 @@ function QueueDialog({ game, platform, source, ip, defaultDrive, onClose, onQueu
     <section className="modal" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
       <div className="modal-head"><span className="eyebrow">{t('sendToXbox')}</span><button className="icon-button" aria-label={t('close')} onClick={onClose}>×</button></div>
       <h2 id="dialog-title">{game}</h2>
-      <p className="modal-subtitle">{source === 'local' ? t('localLibrary') : `${t(sources.find(item => item.id === source)?.label || 'sourceMinerva')} · ${t(platforms.find(item => item.id === platform)?.label || 'platformXbox360')}`}</p>
+      <p className="modal-subtitle">{source === 'local' ? t('localLibrary') : `${t(sources.find(item => item.id === source)?.label || 'sourceMinerva')} · ${platform.startsWith('rom_') ? platform.slice(4).toUpperCase() : t(platforms.find(item => item.id === platform)?.label || 'platformXbox360')}`}</p>
+      {cover && <img className="queue-dialog-cover" src={cover} alt={t('artworkCover')} />}
+      <p className="source-guidance">{t(source === 'local' ? 'guidanceLocal' : source === 'minerva' ? 'guidanceMinerva' : source === 'ia' ? 'guidanceIa' : 'guidanceRom')}</p>
       <label className="field"><span>{t('destinationDrive')}</span>
         <select value={drive} onChange={event => setDrive(event.target.value)}>
           {[...new Set([drive, defaultDrive, ...drives].filter(Boolean))].map(item => <option key={item}>{item}</option>)}
@@ -177,6 +189,7 @@ export default function App() {
   const [search, setSearch] = useState(() => readRouteState().search)
   const [limit, setLimit] = useState(() => readRouteState().limit)
   const [catalog, setCatalog] = useState<BrowseResult>({ games: [] })
+  const [romSystems, setRomSystems] = useState<Array<{ id: string; name: string }>>([])
   const [catalogState, setCatalogState] = useState<'loading' | 'ready' | 'error'>('loading')
   const [catalogError, setCatalogError] = useState<unknown>(null)
   const [config, setConfig] = useState<ServerConfig | null>(null)
@@ -192,7 +205,12 @@ export default function App() {
   const [xboxState, setXboxState] = useState<'idle' | 'checking' | 'connected' | 'error'>('idle')
   const [xboxError, setXboxError] = useState<unknown>(null)
   const [selected, setSelected] = useState<string | null>(null)
+  const [librarySelection, setLibrarySelection] = useState<AuroraGame | null>(null)
   const [notice, setNotice] = useState<TranslationKey | null>(null)
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const menuButton = useRef<HTMLButtonElement>(null)
+  const closeMenuButton = useRef<HTMLButtonElement>(null)
+  const sidebar = useRef<HTMLElement>(null)
 
   const refreshConfig = useCallback(async () => {
     try { setConfig(await getConfig()); setServerError(null) }
@@ -213,6 +231,10 @@ export default function App() {
   useEffect(() => { void refreshConfig(); void refreshQueue() }, [serverUrl, refreshConfig, refreshQueue])
   useEffect(() => { const id = window.setInterval(() => void refreshConfig(), 15000); return () => clearInterval(id) }, [refreshConfig])
   useEffect(() => { void refreshCatalog() }, [refreshCatalog])
+  useEffect(() => { void getRomSystems().then(setRomSystems).catch(() => setRomSystems([])) }, [serverUrl])
+  useEffect(() => {
+    if (source === 'rom' && romSystems.length && !romSystems.some(item => `rom_${item.id}` === platform)) setPlatform(`rom_${romSystems[0].id}`)
+  }, [source, platform, romSystems])
   // Persist route state before the browser can paint the updated filters. This
   // keeps a refresh immediately after a filter change from restoring stale URL
   // parameters.
@@ -236,6 +258,27 @@ export default function App() {
     const id = window.setTimeout(() => setNotice(null), 5000)
     return () => clearTimeout(id)
   }, [notice])
+  useEffect(() => { setMobileMenuOpen(false) }, [page])
+  useEffect(() => {
+    if (!mobileMenuOpen) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    closeMenuButton.current?.focus()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { setMobileMenuOpen(false); menuButton.current?.focus() }
+      if (event.key === 'Tab') {
+        const controls = sidebar.current?.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled])')
+        if (!controls?.length) return
+        const first = controls[0]; const last = controls[controls.length - 1]
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+      }
+    }
+    const onResize = () => { if (window.innerWidth > 700) setMobileMenuOpen(false) }
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('resize', onResize)
+    return () => { document.body.style.overflow = previousOverflow; window.removeEventListener('keydown', onKeyDown); window.removeEventListener('resize', onResize) }
+  }, [mobileMenuOpen])
 
   const filtered = useMemo(() => catalog.games.filter(game => game.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())), [catalog.games, search])
   const activeJobs = jobs.filter(job => job.state === 'Processing').length
@@ -291,10 +334,11 @@ export default function App() {
         : { label: t('xboxNotConfigured'), className: '' }
 
   return <div className="app-shell">
-    <aside className="rail">
-      <div className="brand"><div className="brand-symbol">G<span>·</span></div><div className="brand-copy"><strong>GODsend</strong><small>{t('brandDescriptor')}</small></div></div>
+    {mobileMenuOpen && <button className="mobile-nav-backdrop" aria-label={t('closeNavigation')} onClick={() => { setMobileMenuOpen(false); menuButton.current?.focus() }} />}
+    <aside ref={sidebar} className={mobileMenuOpen ? 'rail open' : 'rail'} id="main-sidebar" role={mobileMenuOpen ? 'dialog' : undefined} aria-modal={mobileMenuOpen || undefined} aria-label={mobileMenuOpen ? t('mainNavigation') : undefined}>
+      <div className="rail-head"><div className="brand"><div className="brand-symbol">G<span>·</span></div><div className="brand-copy"><strong>GODsend</strong><small>{t('brandDescriptor')}</small></div></div><button ref={closeMenuButton} className="rail-close icon-button" aria-label={t('closeNavigation')} onClick={() => { setMobileMenuOpen(false); menuButton.current?.focus() }}>×</button></div>
       <div className="rail-rule" />
-      <nav aria-label={t('mainNavigation')}>
+      <nav aria-label={t('mainNavigation')} onClick={() => { setMobileMenuOpen(false); setLibrarySelection(null); if (window.innerWidth <= 700) menuButton.current?.focus() }}>
         <button className={page === 'catalog' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('catalog')}><span className="nav-glyph">▤</span>{t('catalog')}</button>
         <button className={page === 'queue' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('queue')}><span className="nav-glyph">◷</span>{t('queue')} {activeJobs + waitingCount > 0 && <span className="nav-count">{activeJobs + waitingCount}</span>}</button>
         <button className={page === 'wishlist' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('wishlist')}><span className="nav-glyph">☆</span>{t('wishlist')} {scheduler.state.wishlist.length > 0 && <span className="nav-count">{scheduler.state.wishlist.length}</span>}</button>
@@ -320,7 +364,7 @@ export default function App() {
     </aside>
 
     <main className="main-content">
-      <header className="topbar"><span>GODsend / {t(page === 'catalog' ? 'catalog' : page === 'queue' ? 'queue' : page === 'wishlist' ? 'wishlist' : page === 'library' ? 'xboxLibrary' : page === 'ftp' ? 'ftpManager' : page === 'content' ? 'content' : page === 'saves' ? 'saves' : page === 'iso' ? 'isoTools' : 'connection')}</span><div className="topbar-right"><label className="language-control"><span>{t('language')}</span><select aria-label={t('language')} value={language} onChange={event => setLanguage(event.target.value as 'en' | 'pt-BR')}><option value="en">EN</option><option value="pt-BR">PT-BR</option></select></label><span className="server-label">{t('backend')}</span><span className={config ? 'server-pill online' : 'server-pill'}>{config ? t('online') : t('offline')}</span></div></header>
+      <header className="topbar"><div className="topbar-start"><button ref={menuButton} className="mobile-menu-button" aria-label={t('openNavigation')} aria-expanded={mobileMenuOpen} aria-controls="main-sidebar" onClick={() => setMobileMenuOpen(true)}><span aria-hidden="true">☰</span></button><span>GODsend / {t(page === 'catalog' ? 'catalog' : page === 'queue' ? 'queue' : page === 'wishlist' ? 'wishlist' : page === 'library' ? 'xboxLibrary' : page === 'ftp' ? 'ftpManager' : page === 'content' ? 'content' : page === 'saves' ? 'saves' : page === 'iso' ? 'isoTools' : 'connection')}</span></div><div className="topbar-right"><label className="language-control"><span>{t('language')}</span><select aria-label={t('language')} value={language} onChange={event => setLanguage(event.target.value as 'en' | 'pt-BR')}><option value="en">EN</option><option value="pt-BR">PT-BR</option></select></label><span className="server-label">{t('backend')}</span><span className={config ? 'server-pill online' : 'server-pill'}>{config ? t('online') : t('offline')}</span></div></header>
       {notice && <div className="toast" role="status">{t(notice)}</div>}
       {Boolean(serverError) && <div className="server-alert" role="alert">{t('serverUnavailable', { error: message(serverError, t) })} <button onClick={refreshConfig}>{t('tryAgain')}</button></div>}
 
@@ -328,8 +372,8 @@ export default function App() {
         <div className="page-intro"><span className="eyebrow">{t('libraryEyebrow')}</span><h1>{t('chooseNextGame')}</h1><p>{t('exploreAvailable')}</p></div>
         <div className="catalog-layout"><section className="catalog-panel">
           <div className="section-heading"><div><span className="eyebrow">{t('source')}</span><h2>{t('exploreCatalog')}</h2></div><button className="icon-button" onClick={refreshCatalog} title={t('refreshCatalog')} aria-label={t('refreshCatalog')}>↻</button></div>
-          <div className="tab-row" role="group" aria-label={t('gameSource')}>{sources.map(item => <button key={item.id} className={source === item.id ? 'tab active' : 'tab'} onClick={() => setSource(item.id)}>{t(item.label)}</button>)}</div>
-          {source !== 'local' && <div className="platform-row"><label htmlFor="platform">{t('platform')}</label><select id="platform" value={platform} onChange={event => setPlatform(event.target.value)}>{platforms.map(item => <option key={item.id} value={item.id}>{t(item.label)}</option>)}</select></div>}
+          <div className="tab-row" role="group" aria-label={t('gameSource')}>{sources.map(item => <button key={item.id} className={source === item.id ? 'tab active' : 'tab'} onClick={() => { setSource(item.id); if (item.id === 'rom' && !platform.startsWith('rom_')) setPlatform('rom_nes'); else if (item.id !== 'rom' && platform.startsWith('rom_')) setPlatform('xbox360') }}>{t(item.label)}</button>)}</div>
+          {source !== 'local' && <div className="platform-row"><label htmlFor="platform">{t(source === 'rom' ? 'romSystem' : 'platform')}</label><select id="platform" value={platform} onChange={event => setPlatform(event.target.value)}>{source === 'rom' ? romSystems.length ? romSystems.map(item => <option key={item.id} value={`rom_${item.id}`}>{item.name}</option>) : <option value={platform}>{platform.replace(/^rom_/, '').toUpperCase()}</option> : platforms.map(item => <option key={item.id} value={item.id}>{t(item.label)}</option>)}</select></div>}
           {source === 'local' && <IsoUpload onUploaded={() => void refreshCatalog()} />}
           <div className="search-row"><label className="search-field"><span aria-hidden="true">⌕</span><input value={search} onChange={event => { setSearch(event.target.value); setLimit(80) }} placeholder={t('searchPlaceholder')} aria-label={t('searchGames')} /></label><span className="result-count">{t(filtered.length === 1 ? 'oneTitle' : 'manyTitles', { count: filtered.length })}</span></div>
           <div className="catalog-results">
@@ -347,13 +391,13 @@ export default function App() {
 
       {page === 'wishlist' && <Wishlist scheduler={scheduler} xboxIp={xboxIp} />}
 
-      {page === 'library' && <XboxLibrary xboxIp={xboxIp} />}
+      {page === 'library' && <XboxLibrary xboxIp={xboxIp} onOpenContent={game => { setLibrarySelection(game); setPage('content') }} onOpenSaves={game => { setLibrarySelection(game); setPage('saves') }} />}
       {page === 'ftp' && <FtpManager xboxIp={xboxIp} />}
-      {page === 'content' && <ContentManager xboxIp={xboxIp} drive={config?.default_drive || 'Hdd1:'} />}
-      {page === 'saves' && <SaveManager xboxIp={xboxIp} drive={config?.default_drive || 'auto'} />}
+      {page === 'content' && <ContentManager key={librarySelection?.contentId || 'manual'} xboxIp={xboxIp} drive={librarySelection?.sourceDrive || config?.default_drive || 'Hdd1:'} initialTitleId={librarySelection?.titleId} initialGameName={librarySelection?.name} />}
+      {page === 'saves' && <SaveManager key={librarySelection?.contentId || 'manual'} xboxIp={xboxIp} drive={librarySelection?.sourceDrive || config?.default_drive || 'auto'} initialTitleId={librarySelection?.titleId} />}
       {page === 'iso' && <IsoTools />}
 
-      {page === 'settings' && <div className="page-content narrow"><div className="page-intro"><span className="eyebrow">{t('localNetwork')}</span><h1>{t('connectXbox')}</h1><p>{t('ftpDescription')}</p></div><section className="settings-panel"><div className="section-heading"><div><span className="eyebrow">XBOX 360</span><h2>{t('xboxAddress')}</h2></div></div><p>{t('xboxIpInstructions')}</p><div className="settings-form"><label className="field"><span>{t('xboxIp')}</span><input inputMode="decimal" value={ipInput} onChange={event => setIpInput(event.target.value)} placeholder="192.168.1.50" /></label><button className="button primary" onClick={saveXboxIp}>{t('saveAndTest')}</button></div>{xboxState === 'checking' && <p className="connection-message">{t('testingFtp')}</p>}{xboxState === 'connected' && <p className="connection-message success">{t('ftpConnected')}</p>}{Boolean(xboxError) && <p className="inline-error">{message(xboxError, t)}</p>}<div className="settings-note"><span className="eyebrow">{t('godsendServer')}</span><strong>{effectiveServerAddress}</strong><small>{t('sameOriginApi')}</small></div><div className="server-settings"><span className="eyebrow">{t('server')}</span><h2>{t('serverAddress')}</h2><p>{t('serverAddressInstructions')}</p><div className="settings-form"><label className="field"><span>{t('serverAddress')}</span><input type="url" inputMode="url" value={serverInput} onChange={event => setServerInput(event.target.value)} placeholder={window.location.origin} /></label><button className="button primary" disabled={serverSaving} onClick={() => void saveServerAddress()}>{serverSaving ? t('connecting') : t('saveAndConnect')}</button></div><div className="server-actions"><small>{t('defaultServer', { address: window.location.origin })}</small><button className="text-button" onClick={() => void saveServerAddress('')}>{t('useDefaultServer')}</button></div>{Boolean(serverInputError) && <p className="inline-error">{message(serverInputError, t)}</p>}</div></section></div>}
+      {page === 'settings' && <div className="page-content narrow"><div className="page-intro"><span className="eyebrow">{t('localNetwork')}</span><h1>{t('connectXbox')}</h1><p>{t('ftpDescription')}</p></div><section className="settings-panel"><div className="section-heading"><div><span className="eyebrow">XBOX 360</span><h2>{t('xboxAddress')}</h2></div></div><p>{t('xboxIpInstructions')}</p><div className="settings-form"><label className="field"><span>{t('xboxIp')}</span><input inputMode="decimal" value={ipInput} onChange={event => setIpInput(event.target.value)} placeholder="192.168.1.50" /></label><button className="button primary" onClick={saveXboxIp}>{t('saveAndTest')}</button></div>{xboxState === 'checking' && <p className="connection-message">{t('testingFtp')}</p>}{xboxState === 'connected' && <p className="connection-message success">{t('ftpConnected')}</p>}{Boolean(xboxError) && <p className="inline-error">{message(xboxError, t)}</p>}<div className="settings-note"><span className="eyebrow">{t('godsendServer')}</span><strong>{effectiveServerAddress}</strong><small>{t('sameOriginApi')}</small></div><div className="server-settings"><span className="eyebrow">{t('server')}</span><h2>{t('serverAddress')}</h2><p>{t('serverAddressInstructions')}</p><div className="settings-form"><label className="field"><span>{t('serverAddress')}</span><input type="url" inputMode="url" value={serverInput} onChange={event => setServerInput(event.target.value)} placeholder={window.location.origin} /></label><button className="button primary" disabled={serverSaving} onClick={() => void saveServerAddress()}>{serverSaving ? t('connecting') : t('saveAndConnect')}</button></div><div className="server-actions"><small>{t('defaultServer', { address: window.location.origin })}</small><button className="text-button" onClick={() => void saveServerAddress('')}>{t('useDefaultServer')}</button></div>{Boolean(serverInputError) && <p className="inline-error">{message(serverInputError, t)}</p>}</div></section><ServerTools xboxIp={xboxIp} serverUrl={serverUrl} /></div>}
     </main>
     {selected && <QueueDialog game={selected} platform={platform} source={source} ip={xboxIp} defaultDrive={config?.default_drive || 'Hdd1:'} onClose={() => setSelected(null)} onQueued={status => { setSelected(null); setNotice(status === 'already_processing' ? 'alreadyProcessing' : status === 'already_ready' ? 'alreadyReady' : 'gameQueued'); void refreshQueue(); void scheduler.refresh() }} onWishlisted={() => { setSelected(null); setNotice('gameWishlisted'); void scheduler.refresh() }} />}
   </div>

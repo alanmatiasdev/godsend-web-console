@@ -192,7 +192,7 @@ func normalizeQueueItem(in *queueItem) (queueItem, error) {
 		item.Drive = "Hdd1:"
 	}
 	switch item.Source {
-	case "", "local", "minerva", "ia":
+	case "", "local", "minerva", "ia", "rom":
 	default:
 		return queueItem{}, badQueueRequest("unknown source %q", item.Source)
 	}

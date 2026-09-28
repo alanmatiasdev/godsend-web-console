@@ -26,6 +26,9 @@ try {
   const marker = '\tregisterWebUI(mux)\n'
   const routes = [
     '\tmux.HandleFunc("/webui/upload-file", d.wrap(d.handleWebUIUpload))\n',
+    '\tmux.HandleFunc("/webui/download-file", d.wrap(d.handleWebUIDownload))\n',
+    '\tmux.HandleFunc("/webui/rom-systems", d.wrap(d.handleWebUIRomSystems))\n',
+    '\tmux.HandleFunc("/webui/paths", d.wrap(d.handleWebUIPaths))\n',
     '\tmux.HandleFunc("/webui/artwork/search", d.wrap(d.handleWebUIArtworkSearch))\n',
     '\tmux.HandleFunc("/webui/upload-iso", d.wrap(d.handleWebUIUploadISO))\n',
     '\tmux.HandleFunc("/webui/queue/state", d.wrap(d.handleWebUIQueueState))\n',
@@ -46,7 +49,7 @@ try {
   await cp(dist, assets, { recursive: true })
   await cp(path.join(project, 'integration/serve_webui.go'), path.join(handlers, 'serve_webui.go'))
   await cp(path.join(project, 'integration/serve_webui_test.go'), path.join(handlers, 'serve_webui_test.go'))
-  for (const file of ['webui_upload.go', 'webui_artwork.go', 'webui_artwork_test.go', 'webui_iso_upload.go', 'webui_queue.go', 'webui_queue_test.go']) {
+  for (const file of ['webui_upload.go', 'webui_download.go', 'webui_roms.go', 'webui_paths.go', 'webui_artwork.go', 'webui_artwork_test.go', 'webui_iso_upload.go', 'webui_queue.go', 'webui_queue_test.go']) {
     await cp(path.join(project, 'integration', file), path.join(handlers, file))
   }
   let updatedRouter = source

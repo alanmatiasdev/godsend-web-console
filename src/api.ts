@@ -1,4 +1,4 @@
-export type Source = 'local' | 'minerva' | 'ia'
+export type Source = 'local' | 'minerva' | 'ia' | 'rom'
 export type InstallType = 'god' | 'content' | 'xex'
 export type Job = { game: string; state: string; message: string; kind?: 'game' | 'ftp'; progress?: number; removeId?: number }
 export type ServerConfig = { default_drive?: string; custom_god_path?: string; custom_xex_path?: string }
@@ -66,6 +66,16 @@ export async function getConfig(baseUrl?: string): Promise<ServerConfig> {
   return (await request('/config', undefined, baseUrl)).json()
 }
 
+export type DataStatus = { active_jobs: number; pending_ftp_jobs: number; local_data_bytes: number }
+export type CacheStatus = Record<string, { state: string; loaded: number; total: number; games: number }>
+export async function getDataStatus(): Promise<DataStatus> { return (await request('/data/status')).json() }
+export async function clearServerData(): Promise<void> { await request('/data/clear', { method: 'POST' }) }
+export async function getCacheStatus(): Promise<CacheStatus> { return (await request('/cache-status')).json() }
+export async function refreshCaches(): Promise<void> { await request('/cache-refresh?platform=all', { method: 'POST' }) }
+export async function uploadAuroraScripts(ip: string, scriptsDir: string, remotePath: string, serverIp: string, serverPort: string): Promise<void> {
+  await jsonRequest('/ftp/upload-scripts', { ip, scripts_dir: scriptsDir, remote_path: remotePath, server_ip: serverIp, server_port: serverPort })
+}
+
 export async function getQueue(): Promise<Job[]> {
   const data: unknown = await (await request('/queue')).json()
   return Array.isArray(data) ? data.filter((item): item is Job =>
@@ -102,6 +112,23 @@ export async function uploadBrowserFiles(ip: string, remotePath: string, files: 
   body.set('remote_path', remotePath)
   for (const file of files) body.append('files', file, file.name)
   await request('/webui/upload-file', { method: 'POST', body }, apiBaseUrl, 30 * 60 * 1000)
+}
+
+export async function downloadBrowserFile(ip: string, remotePath: string, onProgress?: (fraction: number) => void): Promise<Blob> {
+  const response = await request(query('/webui/download-file', { ip, path: remotePath }), undefined, apiBaseUrl, 30 * 60 * 1000)
+  if (!response.body || !onProgress) return response.blob()
+  const total = Number(response.headers.get('Content-Length'))
+  const reader = response.body.getReader()
+  const chunks: Uint8Array<ArrayBuffer>[] = []
+  let loaded = 0
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    const chunk = new Uint8Array(value)
+    chunks.push(chunk); loaded += chunk.byteLength
+    if (total > 0) onProgress(Math.min(1, loaded / total))
+  }
+  return new Blob(chunks, { type: response.headers.get('Content-Type') || 'application/octet-stream' })
 }
 
 export async function moveXboxGame(ip: string, game: { name: string; sourceDrive: string; directory: string }, targetDrive: string): Promise<void> {
@@ -317,6 +344,11 @@ export async function browse(platform: string, source: Source): Promise<BrowseRe
   return { games: body.split('|').map(name => name.trim()).filter(Boolean) }
 }
 
+export async function getRomSystems(): Promise<Array<{ id: string; name: string }>> {
+  const data = await (await request('/webui/rom-systems')).json() as { systems?: Array<{ id: string; name: string }> }
+  return Array.isArray(data.systems) ? data.systems.filter(item => typeof item.id === 'string' && typeof item.name === 'string') : []
+}
+
 export async function getDrives(ip: string): Promise<string[]> {
   const data = await (await request(query('/ftp/drives', { ip }))).json()
   return Array.isArray(data.drives) ? data.drives.filter((drive: unknown): drive is string => typeof drive === 'string') : []
@@ -328,6 +360,10 @@ export async function pingXbox(ip: string): Promise<void> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ip }),
   })
+}
+
+export async function testXboxCredentials(ip: string, user: string, password: string): Promise<{ ok: boolean; log: string[] }> {
+  return jsonRequest('/ftp/test', { ip, user, password }, 'POST', 30000)
 }
 
 export async function getDiscInfo(game: string): Promise<{ recommendation?: InstallType; notes?: string } | null> {
@@ -397,7 +433,7 @@ export async function enqueueGame(entry: QueueEntry): Promise<string> {
 }
 
 // XMLHttpRequest instead of fetch: it is the only way a browser reports upload progress.
-export function uploadIso(file: File, onProgress: (fraction: number) => void, signal?: AbortSignal): Promise<void> {
+export function uploadIso(file: File, onProgress: (fraction: number) => void, signal?: AbortSignal): Promise<Array<{ name: string; size: number }>> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     const body = new FormData()
@@ -405,7 +441,11 @@ export function uploadIso(file: File, onProgress: (fraction: number) => void, si
     xhr.open('POST', apiBaseUrl ? new URL('/webui/upload-iso', `${apiBaseUrl}/`).toString() : '/webui/upload-iso')
     xhr.upload.onprogress = event => { if (event.lengthComputable) onProgress(event.loaded / event.total) }
     xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) { onProgress(1); resolve(); return }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try { const data = JSON.parse(xhr.responseText) as { files?: Array<{ name: string; size: number }> }; onProgress(1); resolve(data.files || []) }
+        catch { reject(new Error('Invalid ISO upload response.')) }
+        return
+      }
       let detail = `${xhr.status} ${xhr.statusText}`
       try { const parsed = JSON.parse(xhr.responseText); detail = parsed.message || parsed.error || detail } catch { /* Plain-text error. */ }
       reject(new HttpError(detail, xhr.status))
@@ -416,6 +456,10 @@ export function uploadIso(file: File, onProgress: (fraction: number) => void, si
     if (signal?.aborted) { reject(new DOMException('Upload cancelled', 'AbortError')); return }
     xhr.send(body)
   })
+}
+
+export async function getServerPaths(): Promise<{ transfer_dir: string; ready_dir: string }> {
+  return (await request('/webui/paths')).json()
 }
 
 export async function getFtpJobs(): Promise<FtpJob[]> {
@@ -447,6 +491,25 @@ export async function queueContent(item: ContentItem, gameName: string, xboxIp: 
 }
 export async function setTitleUpdateActive(item: ContentItem, xboxIp: string, drive: string, setActive: boolean): Promise<void> {
   await jsonRequest('/content/set-active', { title_id: item.title_id, content_type: item.content_type, file_name: item.file_name, xbox_ip: xboxIp, drive, set_active: setActive })
+}
+
+function installedContentPath(item: ContentItem, fallbackDrive: string): string {
+  const drive = (item.drive || fallbackDrive).replace(/:$/, '')
+  if (!item.installed || !/^[A-Za-z0-9]+$/.test(drive) || !/^[0-9A-F]{8}$/i.test(item.title_id) || !/^[0-9A-F]{8}$/i.test(item.content_type) || !item.file_name || /[/\\]/.test(item.file_name) || item.file_name === '.' || item.file_name === '..') throw new Error('Installed content path is invalid.')
+  return `/${drive}/Content/0000000000000000/${item.title_id}/${item.content_type}/${item.file_name}`
+}
+
+export async function deleteInstalledContent(item: ContentItem, xboxIp: string, fallbackDrive: string): Promise<void> {
+  await deleteFtp(xboxIp, installedContentPath(item, fallbackDrive))
+}
+
+export async function moveInstalledContent(item: ContentItem, xboxIp: string, fallbackDrive: string, targetDrive: string): Promise<void> {
+  const source = installedContentPath(item, fallbackDrive)
+  const target = targetDrive.replace(/:$/, '')
+  if (!/^[A-Za-z0-9]+$/.test(target) || target.toLowerCase() === source.split('/')[1].toLowerCase()) throw new Error('Choose another Xbox drive.')
+  const destination = `/${target}/Content/0000000000000000/${item.title_id}/${item.content_type}`
+  await mkdirFtp(xboxIp, destination)
+  await renameFtp(xboxIp, source, `${destination}/${item.file_name}`)
 }
 
 export async function discoverSaves(ip: string, drive: string, titleId = ''): Promise<SaveProfile[]> {

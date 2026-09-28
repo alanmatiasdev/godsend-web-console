@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { HttpError, getDrives, getSchedulerState, schedulerAction, uploadIso, type InstallType, type QueueItem, type SchedulerAction, type SchedulerState } from './api'
 import { useI18n, type Translate, type TranslationKey } from './i18n'
 
-const sourceKeys = { local: 'sourceLocal', minerva: 'sourceMinerva', ia: 'sourceIa' } as const satisfies Record<string, TranslationKey>
+const sourceKeys = { local: 'sourceLocal', minerva: 'sourceMinerva', ia: 'sourceIa', rom: 'sourceRom' } as const satisfies Record<string, TranslationKey>
 const installTypes: InstallType[] = ['god', 'content', 'xex']
 
 function errorText(error: unknown): string { return error instanceof Error ? error.message : 'Unknown error' }
