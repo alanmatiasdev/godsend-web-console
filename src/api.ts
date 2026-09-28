@@ -131,6 +131,12 @@ export async function downloadBrowserFile(ip: string, remotePath: string, onProg
   return new Blob(chunks, { type: response.headers.get('Content-Type') || 'application/octet-stream' })
 }
 
+export async function downloadBrowserArchive(ip: string, paths: string[]): Promise<Blob> {
+  return (await request('/webui/archive', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ip, paths }),
+  }, apiBaseUrl, 60 * 60 * 1000)).blob()
+}
+
 export async function moveXboxGame(ip: string, game: { name: string; sourceDrive: string; directory: string }, targetDrive: string): Promise<void> {
   await jsonRequest('/ftp/move-game', { ip, game_name: game.name, src_drive: game.sourceDrive, directory: game.directory, target_drive: targetDrive })
 }
@@ -298,6 +304,18 @@ export async function getAuroraArtworkSet(ip: string, root: string, game: Aurora
     } catch { /* One undecodable asset should not hide the others. */ }
   }))
   return found
+}
+
+// Load only the cover asset for a visible library row.
+export async function getAuroraCover(ip: string, root: string, game: AuroraGame): Promise<string | null> {
+  const assetPath = `${auroraGameDataPath(root, game)}/GC${game.titleId}.asset`
+  const result = (await ftpBatch(ip, [{ op: 'download_base64', path: assetPath }], 120000))[0]
+  if (!result?.ok || typeof result.data !== 'string') return null
+  const bytes = fromBase64(result.data)
+  if (bytes.length < 2048) return null
+  const slots = await decodeAuroraAsset(bytes)
+  const cover = slots.find(slot => slot.slot === 2 && slot.png)
+  return cover ? `data:image/png;base64,${cover.png}` : null
 }
 
 export async function searchArtwork(type: string, titleId: string, queryText: string): Promise<ArtworkResult[]> {
@@ -520,13 +538,13 @@ export async function listSaves(ip: string, drive: string, titleId: string, prof
   const data = await (await request(query('/saves/list', { ip, drive, title_id: titleId, profile_id: profileId }))).json()
   return Array.isArray(data.entries) ? data.entries : []
 }
-export async function backupAllSaves(ip: string, drive: string): Promise<void> { await jsonRequest('/saves/backup-all', { ip, drive }) }
-export async function downloadSave(ip: string, drive: string, titleId: string, profileId: string, gameName: string): Promise<void> { await jsonRequest('/saves/download', { ip, drive, title_id: titleId, profile_id: profileId, game_name: gameName }) }
+export async function backupAllSaves(ip: string, drive: string): Promise<void> { await jsonRequest('/saves/backup-all', { ip, drive }, 'POST', 60 * 60 * 1000) }
+export async function downloadSave(ip: string, drive: string, titleId: string, profileId: string, gameName: string): Promise<void> { await jsonRequest('/saves/download', { ip, drive, title_id: titleId, profile_id: profileId, game_name: gameName }, 'POST', 30 * 60 * 1000) }
 export async function deleteSave(ip: string, drive: string, titleId: string, profileId: string): Promise<void> { await jsonRequest('/saves/delete', { ip, drive, title_id: titleId, profile_id: profileId }) }
 export async function copySave(ip: string, drive: string, titleId: string, srcProfile: string, dstProfile: string, useKeyVault: boolean): Promise<void> {
   await jsonRequest('/saves/copy', { ip, drive, title_id: titleId, src_profile: srcProfile, dst_profile: dstProfile, use_keyvault: useKeyVault })
 }
 
 export type IsoInfo = { titleId: string; mediaId: string; discNumber: number; discCount: number; isOriginalXbox: boolean; displayName: string }
-export async function probeIso(isoPath: string): Promise<IsoInfo> { return jsonRequest('/tools/probe-iso', { isoPath }) }
-export async function convertIso(format: 'god' | 'xex', isoPath: string, outDir: string): Promise<{ displayName: string; outputDir: string }> { return jsonRequest(`/tools/iso2${format}`, { isoPath, outDir }) }
+export async function probeIso(isoPath: string): Promise<IsoInfo> { return jsonRequest('/tools/probe-iso', { isoPath }, 'POST', 120000) }
+export async function convertIso(format: 'god' | 'xex', isoPath: string, outDir: string): Promise<{ displayName: string; outputDir: string }> { return jsonRequest(`/tools/iso2${format}`, { isoPath, outDir }, 'POST', 60 * 60 * 1000) }

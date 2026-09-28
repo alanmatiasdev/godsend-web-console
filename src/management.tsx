@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  backupAllSaves, convertIso, copyFtp, copySave, deleteFtp, deleteSave, discoverSaves, downloadBrowserFile, downloadSave,
+  backupAllSaves, convertIso, copyFtp, copySave, deleteFtp, deleteSave, discoverSaves, downloadBrowserArchive, downloadBrowserFile, downloadSave,
   getContent, getFtpJobs, getServerPaths, getTitleUpdates, listFtp, listSaves, mkdirFtp, probeIso,
   queueContent, removeFtpJob, renameFtp, setTitleUpdateActive, uploadBrowserFiles, uploadFtp, uploadIso,
-  deleteInstalledContent, discoverAuroraRoot, getDrives, loadAuroraLibrary, moveInstalledContent, moveXboxGame,
+  deleteInstalledContent, discoverAuroraRoot, getAuroraCover, getDrives, loadAuroraLibrary, moveInstalledContent, moveXboxGame,
   type AuroraGame,
   type ContentItem, type ContentManifest, type FtpEntry, type FtpJob, type IsoInfo, type SaveEntry, type SaveProfile,
 } from './api'
@@ -12,11 +12,45 @@ import { useI18n } from './i18n'
 
 function errorText(error: unknown): string { return error instanceof Error ? error.message : 'Unknown error' }
 function joinPath(path: string, name: string): string { return `${path.replace(/\/+$/, '')}/${name}`.replace(/\/+/g, '/') }
+function validXboxDestination(value: string): boolean { return /^\/[A-Za-z0-9]+\/.+/.test(value) && !value.includes('\\') && value.split('/').every(part => part !== '.' && part !== '..') }
 function bytes(value?: number): string {
   if (!value) return '—'
   const units = ['B', 'KB', 'MB', 'GB']; let n = value; let unit = 0
   while (n >= 1024 && unit < units.length - 1) { n /= 1024; unit += 1 }
   return `${n.toFixed(unit ? 1 : 0)} ${units[unit]}`
+}
+
+let activeCoverReads = 0
+const waitingCoverReads: Array<() => void> = []
+async function withCoverReadSlot<T>(work: () => Promise<T>): Promise<T> {
+  if (activeCoverReads >= 3) await new Promise<void>(resolve => waitingCoverReads.push(resolve))
+  activeCoverReads += 1
+  try { return await work() }
+  finally { activeCoverReads -= 1; waitingCoverReads.shift()?.() }
+}
+
+function LibraryCover({ xboxIp, root, game }: { xboxIp: string; root: string; game: AuroraGame }) {
+  const element = useRef<HTMLSpanElement>(null)
+  const [cover, setCover] = useState<string | null>(null)
+  useEffect(() => {
+    if (!root) return
+    setCover(null)
+    let active = true
+    let started = false
+    const load = () => {
+      if (started) return
+      started = true
+      void withCoverReadSlot(() => active ? getAuroraCover(xboxIp, root, game) : Promise.resolve(null)).then(image => { if (active) setCover(image) }).catch(() => {})
+    }
+    if (!('IntersectionObserver' in window)) load()
+    else {
+      const observer = new IntersectionObserver(items => { if (items.some(item => item.isIntersecting)) { observer.disconnect(); load() } }, { rootMargin: '200px' })
+      if (element.current) observer.observe(element.current)
+      return () => { active = false; observer.disconnect() }
+    }
+    return () => { active = false }
+  }, [xboxIp, root, game])
+  return <span ref={element} className="game-cover-placeholder" aria-hidden="true">{cover ? <img src={cover} alt="" /> : game.name.slice(0, 1).toUpperCase()}</span>
 }
 
 export function XboxLibrary({ xboxIp, onOpenContent, onOpenSaves }: { xboxIp: string; onOpenContent: (game: AuroraGame) => void; onOpenSaves: (game: AuroraGame) => void }) {
@@ -67,7 +101,7 @@ export function XboxLibrary({ xboxIp, onOpenContent, onOpenSaves }: { xboxIp: st
       <section className="tool-panel library-list"><div className="library-list-head"><span>{t('game')}</span><span>{t('titleId')}</span><span>{t('drive')}</span><span>{t('move')}</span><span>{t('manage')}</span></div>
         {busy && games.length === 0 && <div className="empty-table">{t('loadingLibrary')}</div>}
         {!busy && !error && filtered.length === 0 && <div className="empty-table">{games.length ? t('noSearchMatches') : t('noAuroraGames')}</div>}
-        {filtered.map(game => <article className="library-game" key={game.contentId}><div className="library-game-title"><span className="game-cover-placeholder">{game.name.slice(0, 1).toUpperCase()}</span><div><strong>{game.name}{game.isFavorite ? ' ★' : ''}</strong><small>{[game.publisher, game.releaseDate, game.discsInSet > 1 ? `Disc ${game.discNum}/${game.discsInSet}` : ''].filter(Boolean).join(' · ')}</small></div></div><code>{game.titleId}</code><span>{game.sourceDrive || '—'}</span><div className="move-controls"><select aria-label={t('move')} value={targetByGame[game.contentId] || ''} disabled={!game.sourceDrive} onChange={event => setTargetByGame(current => ({ ...current, [game.contentId]: event.target.value }))}><option value="">{game.sourceDrive ? t('chooseDrive') : t('driveUnknown')}</option>{drives.filter(drive => drive.replace(/:$/, '') !== game.sourceDrive).map(drive => <option key={drive} value={drive}>{drive.replace(/:$/, '')}</option>)}</select><button className="button secondary" disabled={!targetByGame[game.contentId] || moving === game.contentId} onClick={() => void move(game)}>{moving === game.contentId ? '…' : t('move')}</button></div><div className="library-actions"><button className="button secondary" onClick={() => setArtworkGame(game)}>{t('artwork')}</button><button className="button secondary" onClick={() => onOpenContent(game)}>{t('content')}</button><button className="button secondary" onClick={() => onOpenSaves(game)}>{t('saves')}</button></div></article>)}
+        {filtered.map(game => <article className="library-game" key={game.contentId}><div className="library-game-title"><LibraryCover xboxIp={xboxIp} root={root} game={game} /><div><strong>{game.name}{game.isFavorite ? ' ★' : ''}</strong><small>{[game.publisher, game.releaseDate, game.discsInSet > 1 ? `Disc ${game.discNum}/${game.discsInSet}` : ''].filter(Boolean).join(' · ')}</small></div></div><code>{game.titleId}</code><span>{game.sourceDrive || '—'}</span><div className="move-controls"><select aria-label={t('move')} value={targetByGame[game.contentId] || ''} disabled={!game.sourceDrive} onChange={event => setTargetByGame(current => ({ ...current, [game.contentId]: event.target.value }))}><option value="">{game.sourceDrive ? t('chooseDrive') : t('driveUnknown')}</option>{drives.filter(drive => drive.replace(/:$/, '') !== game.sourceDrive).map(drive => <option key={drive} value={drive}>{drive.replace(/:$/, '')}</option>)}</select><button className="button secondary" disabled={!targetByGame[game.contentId] || moving === game.contentId} onClick={() => void move(game)}>{moving === game.contentId ? '…' : t('move')}</button></div><div className="library-actions"><button className="button secondary" onClick={() => setArtworkGame(game)}>{t('artwork')}</button><button className="button secondary" onClick={() => onOpenContent(game)}>{t('content')}</button><button className="button secondary" onClick={() => onOpenSaves(game)}>{t('saves')}</button></div></article>)}
       </section>
       {artworkGame && <ArtworkDialog xboxIp={xboxIp} root={root} game={artworkGame} onClose={() => setArtworkGame(null)} />}
     </>}
@@ -112,17 +146,28 @@ export function FtpManager({ xboxIp }: { xboxIp: string }) {
   }
   function toggle(name: string) { setSelected(values => values.includes(name) ? values.filter(value => value !== name) : [...values, name]) }
   function navigate(entry: FtpEntry) { if (entry.type === 'dir') void load(joinPath(cwdRef.current, entry.name)) }
+  function saveBrowserDownload(blob: Blob, name: string) {
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url; link.download = name
+    document.body.append(link); link.click(); link.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 60000)
+  }
   async function download(entry: FtpEntry) {
     setDownloading(entry.name); setDownloadProgress(null); setError('')
     try {
       const blob = await downloadBrowserFile(xboxIp, joinPath(cwdRef.current, entry.name), setDownloadProgress)
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url; link.download = entry.name
-      document.body.append(link); link.click(); link.remove()
-      window.setTimeout(() => URL.revokeObjectURL(url), 60000)
+      saveBrowserDownload(blob, entry.name)
     } catch (cause) { setError(errorText(cause)) }
     finally { setDownloading(null); setDownloadProgress(null) }
+  }
+  async function downloadArchive(names: string[]) {
+    setDownloading('archive'); setDownloadProgress(null); setError('')
+    try {
+      const blob = await downloadBrowserArchive(xboxIp, names.map(name => joinPath(cwdRef.current, name)))
+      saveBrowserDownload(blob, names.length === 1 ? `${names[0]}.zip` : 'Xbox-files.zip')
+    } catch (cause) { setError(errorText(cause)) }
+    finally { setDownloading(null) }
   }
   const breadcrumbs = cwd.split('/').filter(Boolean)
 
@@ -135,8 +180,8 @@ export function FtpManager({ xboxIp }: { xboxIp: string }) {
         <p className="tool-hint">{t('serverPathsHint')}</p>
         {uploadMessage && <p className="connection-message success">{uploadMessage}</p>}
         {error && <p className="inline-error">{error}</p>}
-        {selected.length > 0 && <div className="selection-bar"><span>{t('selectedItems', { count: selected.length })}</span><button className="text-button" onClick={() => void perform(async () => { for (const name of selected) await deleteFtp(xboxIp, joinPath(cwd, name)) })}>{t('delete')}</button><button className="text-button" onClick={() => { const target = window.prompt(t('move')); if (target) void perform(async () => { for (const name of selected) await renameFtp(xboxIp, joinPath(cwd, name), joinPath(target, name)) }) }}>{t('move')}</button><button className="text-button" onClick={() => { const target = window.prompt(t('copy')); if (target) void perform(async () => { for (const name of selected) { const entry = entries.find(item => item.name === name); await copyFtp(xboxIp, joinPath(cwd, name), joinPath(target, name), entry?.type === 'dir') } }, false) }}>{t('copy')}</button></div>}
-        <div className="file-table" role="table"><div className="file-row file-head" role="row"><span /><span>{t('name')}</span><span>{t('type')}</span><span>{t('size')}</span></div>{entries.map(entry => <div className="file-row" role="row" key={entry.name}><input type="checkbox" checked={selected.includes(entry.name)} onChange={() => toggle(entry.name)} aria-label={entry.name} /><div className="file-cell"><button className={entry.type === 'dir' ? 'file-name dir' : 'file-name'} onClick={() => navigate(entry)}>{entry.type === 'dir' ? '▸' : '·'} {entry.name}</button>{entry.type === 'file' && <button className="file-download" disabled={downloading !== null} title={t('downloadToDevice')} aria-label={t('downloadFile', { name: entry.name })} onClick={() => void download(entry)}>{downloading === entry.name ? downloadProgress === null ? '…' : `${Math.round(downloadProgress * 100)}%` : '↓'}</button>}</div><span>{t(entry.type === 'dir' ? 'folder' : 'file')}</span><span>{bytes(entry.size)}</span></div>)}{!busy && entries.length === 0 && <div className="empty-table">{t('emptyDirectory')}</div>}</div>
+        {selected.length > 0 && <div className="selection-bar"><span>{t('selectedItems', { count: selected.length })}</span><button className="text-button" disabled={downloading !== null} onClick={() => void downloadArchive(selected)}>{downloading === 'archive' ? t('preparingArchive') : t('downloadZip')}</button><button className="text-button" onClick={() => void perform(async () => { for (const name of selected) await deleteFtp(xboxIp, joinPath(cwd, name)) })}>{t('delete')}</button><button className="text-button" onClick={() => { const target = window.prompt(t('move')); if (target) void perform(async () => { for (const name of selected) await renameFtp(xboxIp, joinPath(cwd, name), joinPath(target, name)) }) }}>{t('move')}</button><button className="text-button" onClick={() => { const target = window.prompt(t('copy')); if (target) void perform(async () => { for (const name of selected) { const entry = entries.find(item => item.name === name); await copyFtp(xboxIp, joinPath(cwd, name), joinPath(target, name), entry?.type === 'dir') } }, false) }}>{t('copy')}</button></div>}
+        <div className="file-table" role="table"><div className="file-row file-head" role="row"><span /><span>{t('name')}</span><span>{t('type')}</span><span>{t('size')}</span></div>{entries.map(entry => <div className="file-row" role="row" key={entry.name}><input type="checkbox" checked={selected.includes(entry.name)} onChange={() => toggle(entry.name)} aria-label={entry.name} /><div className="file-cell"><button className={entry.type === 'dir' ? 'file-name dir' : 'file-name'} onClick={() => navigate(entry)}>{entry.type === 'dir' ? '▸' : '·'} {entry.name}</button><button className="file-download" disabled={downloading !== null} title={entry.type === 'dir' ? t('downloadZip') : t('downloadToDevice')} aria-label={entry.type === 'dir' ? t('downloadFolder', { name: entry.name }) : t('downloadFile', { name: entry.name })} onClick={() => void (entry.type === 'dir' ? downloadArchive([entry.name]) : download(entry))}>{downloading === entry.name || (downloading === 'archive' && selected.length === 1 && selected[0] === entry.name) ? downloadProgress === null ? '…' : `${Math.round(downloadProgress * 100)}%` : '↓'}</button></div><span>{t(entry.type === 'dir' ? 'folder' : 'file')}</span><span>{bytes(entry.size)}</span></div>)}{!busy && entries.length === 0 && <div className="empty-table">{t('emptyDirectory')}</div>}</div>
       </section>
       <section className="tool-panel transfer-panel"><div className="section-heading"><div><span className="eyebrow">FTP</span><h2>{t('ftpTransfers')}</h2></div></div>{jobs.length === 0 ? <div className="empty-table">{t('noFtpTransfers')}</div> : jobs.map(job => <div className="transfer-row" key={job.id}><span className={`status-dot ${job.state === 'Ready' ? 'ready' : job.state === 'Error' ? 'error' : 'processing'}`} /><strong>{job.name}</strong><span>{job.state}{job.progress !== undefined ? ` · ${job.progress}%` : ''}</span>{['Ready', 'Error'].includes(job.state) && <button className="text-button" onClick={() => void removeFtpJob(job.id).then(loadJobs)}>{t('remove')}</button>}</div>)}</section>
     </>}
@@ -175,10 +220,22 @@ export function SaveManager({ xboxIp, drive, initialTitleId = '' }: { xboxIp: st
   return <div className="page-content tool-page"><div className="page-intro"><span className="eyebrow">XBOX / SAVES</span><h1>{t('savesTitle')}</h1><p>{t('savesDescription')}</p></div>{!xboxIp ? <div className="empty-state panel-message"><p>{t('xboxRequired')}</p></div> : <><section className="tool-panel query-panel"><div className="settings-form"><label className="field"><span>{t('titleId')}</span><input value={titleId} onChange={event => setTitleId(event.target.value.toUpperCase())} placeholder="4D5307E6" /></label><button className="button primary" disabled={busy} onClick={() => void discover()}>{t('discoverProfiles')}</button><button className="button secondary" disabled={busy} onClick={() => void action(() => backupAllSaves(xboxIp, drive))}>{t('backUpAll')}</button></div>{error && <p className="inline-error">{error}</p>}</section><div className="two-panel"><section className="tool-panel"><div className="section-heading"><div><span className="eyebrow">XBOX</span><h2>{t('profile')}</h2></div></div>{profiles.map(item => <button className={profile?.profile_id === item.profile_id ? 'profile-row selected' : 'profile-row'} key={item.profile_id} onClick={() => void select(item)}><strong>{item.profile_name || item.profile_id}</strong><small>{item.profile_id}{item.save_count !== undefined ? ` · ${item.save_count}` : ''}</small></button>)}</section><section className="tool-panel"><div className="section-heading"><div><span className="eyebrow">XBOX</span><h2>{t('saveFiles')}</h2></div>{profile && <button className="button secondary" disabled={busy} onClick={() => void action(() => downloadSave(xboxIp, drive, titleId, profile.profile_id, ''))}>{t('backUp')}</button>}</div>{!profile ? <div className="empty-table">{t('selectProfile')}</div> : entries.map(entry => <div className="save-row" key={entry.name}><strong>{entry.name}</strong><span>{bytes(entry.size)}</span></div>)}{profile && <div className="save-copy-controls"><label className="field"><span>{t('copyToProfile')}</span><select value={targetProfile} onChange={event => setTargetProfile(event.target.value)}><option value="">{t('chooseProfile')}</option>{profiles.filter(item => item.profile_id !== profile.profile_id).map(item => <option key={item.profile_id} value={item.profile_id}>{item.profile_name || item.profile_id}</option>)}</select></label><label className="check-field"><input type="checkbox" checked={useKeyVault} onChange={event => setUseKeyVault(event.target.checked)} />{t('useKeyVault')}</label><button className="button secondary" disabled={busy || !targetProfile || !entries.length} onClick={() => void action(() => copySave(xboxIp, drive, titleId, profile.profile_id, targetProfile, useKeyVault))}>{t('copy')}</button></div>}{profile && <button className="text-button destructive" disabled={busy} onClick={() => { if (window.confirm(t('delete'))) void action(() => deleteSave(xboxIp, drive, titleId, profile.profile_id).then(discover)) }}>{t('delete')}</button>}</section></div></>}</div>
 }
 
-export function IsoTools() {
+export function IsoTools({ xboxIp, defaultDrive }: { xboxIp: string; defaultDrive: string }) {
   const { t } = useI18n(); const [isoPath, setIsoPath] = useState(''); const [outDir, setOutDir] = useState(''); const [info, setInfo] = useState<IsoInfo | null>(null); const [result, setResult] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const [progress, setProgress] = useState<number | null>(null)
+  const [sendAfterConversion, setSendAfterConversion] = useState(false)
+  const [xboxDestination, setXboxDestination] = useState('')
   async function probe() { setBusy(true); setError(''); setResult(''); try { setInfo(await probeIso(isoPath.trim())) } catch (cause) { setError(errorText(cause)) } finally { setBusy(false) } }
-  async function convert(format: 'god' | 'xex') { setBusy(true); setError(''); setResult(''); try { const data = await convertIso(format, isoPath.trim(), outDir.trim()); setResult(t('conversionComplete', { path: data.outputDir })) } catch (cause) { setError(errorText(cause)) } finally { setBusy(false) } }
+  async function convert(format: 'god' | 'xex') {
+    setBusy(true); setError(''); setResult('')
+    try {
+      const data = await convertIso(format, isoPath.trim(), outDir.trim())
+      setResult(t('conversionComplete', { path: data.outputDir }))
+      if (sendAfterConversion) {
+        await uploadFtp(xboxIp, [data.outputDir], xboxDestination.trim())
+        setResult(t('conversionAndTransferQueued', { path: data.outputDir }))
+      }
+    } catch (cause) { setError(errorText(cause)) } finally { setBusy(false) }
+  }
   async function selectLocalIso(file: File) {
     setBusy(true); setError(''); setResult(''); setProgress(0); setInfo(null)
     try {
@@ -192,5 +249,6 @@ export function IsoTools() {
     } catch (cause) { setError(errorText(cause)) }
     finally { setBusy(false); setProgress(null) }
   }
-  return <div className="page-content tool-page"><div className="page-intro"><span className="eyebrow">SERVER / ISO</span><h1>{t('isoToolsTitle')}</h1><p>{t('isoToolsDescription')}</p></div><section className="tool-panel"><div className="iso-picker"><label className="button secondary"><input className="visually-hidden" type="file" accept=".iso" disabled={busy} onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void selectLocalIso(file) }} />{t('chooseIsoFiles')}</label>{progress !== null && <><progress value={progress} max={1} aria-label={t('uploadingIso', { percent: Math.round(progress * 100) })} /><span>{t('uploadingIso', { percent: Math.round(progress * 100) })}</span></>}</div><div className="settings-form iso-form"><label className="field"><span>{t('isoPath')}</span><input value={isoPath} onChange={event => setIsoPath(event.target.value)} placeholder="/srv/godsend/Transfer/game.iso" /></label><label className="field"><span>{t('outputDirectory')}</span><input value={outDir} onChange={event => setOutDir(event.target.value)} placeholder="/srv/godsend/Ready" /></label><button className="button secondary" disabled={!isoPath.trim() || busy} onClick={() => void probe()}>{t('probe')}</button><button className="button primary" disabled={!isoPath.trim() || !outDir.trim() || busy} onClick={() => void convert('god')}>{t('convertToGod')}</button><button className="button primary" disabled={!isoPath.trim() || !outDir.trim() || busy} onClick={() => void convert('xex')}>{t('extractToXex')}</button></div>{error && <p className="inline-error">{error}</p>}{result && <p className="connection-message success">{result}</p>}{info && <div className="disc-info"><span className="eyebrow">{t('discInfo')}</span><strong>{info.displayName}</strong><span>{t('titleId')}: {info.titleId} · Media ID: {info.mediaId}</span><small>{t('disc', { number: info.discNumber, count: info.discCount })}{info.isOriginalXbox ? ' · Original Xbox' : ''}</small></div>}</section></div>
+  const canConvert = Boolean(isoPath.trim() && outDir.trim() && !busy && (!sendAfterConversion || (xboxIp && validXboxDestination(xboxDestination.trim()))))
+  return <div className="page-content tool-page"><div className="page-intro"><span className="eyebrow">SERVER / ISO</span><h1>{t('isoToolsTitle')}</h1><p>{t('isoToolsDescription')}</p></div><section className="tool-panel"><div className="iso-picker"><label className="button secondary"><input className="visually-hidden" type="file" accept=".iso" disabled={busy} onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void selectLocalIso(file) }} />{t('chooseIsoFiles')}</label>{progress !== null && <><progress value={progress} max={1} aria-label={t('uploadingIso', { percent: Math.round(progress * 100) })} /><span>{t('uploadingIso', { percent: Math.round(progress * 100) })}</span></>}</div><div className="settings-form iso-form"><label className="field"><span>{t('isoPath')}</span><input value={isoPath} onChange={event => setIsoPath(event.target.value)} placeholder="/srv/godsend/Transfer/game.iso" /></label><label className="field"><span>{t('outputDirectory')}</span><input value={outDir} onChange={event => setOutDir(event.target.value)} placeholder="/srv/godsend/Ready" /></label><label className="check-field iso-auto-ftp"><input type="checkbox" checked={sendAfterConversion} disabled={!xboxIp || busy} onChange={event => setSendAfterConversion(event.target.checked)} />{t('sendAfterConversion')}</label>{sendAfterConversion && <label className="field iso-ftp-destination"><span>{t('xboxTransferFolder')}</span><input value={xboxDestination} disabled={busy} onChange={event => setXboxDestination(event.target.value)} placeholder={`/${defaultDrive.replace(/:$/, '')}/Games`} /><small>{t('xboxTransferFolderHint')}</small></label>}<button className="button secondary" disabled={!isoPath.trim() || busy} onClick={() => void probe()}>{t('probe')}</button><button className="button primary" disabled={!canConvert} onClick={() => void convert('god')}>{t('convertToGod')}</button><button className="button primary" disabled={!canConvert} onClick={() => void convert('xex')}>{t('extractToXex')}</button></div>{error && <p className="inline-error">{error}</p>}{result && <p className="connection-message success">{result}</p>}{info && <div className="disc-info"><span className="eyebrow">{t('discInfo')}</span><strong>{info.displayName}</strong><span>{t('titleId')}: {info.titleId} · Media ID: {info.mediaId}</span><small>{t('disc', { number: info.discNumber, count: info.discCount })}{info.isOriginalXbox ? ' · Original Xbox' : ''}</small></div>}</section></div>
 }
