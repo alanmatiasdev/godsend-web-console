@@ -33,6 +33,6 @@ func registerWebUI(mux *stdhttp.ServeMux) {
 // are intentionally handled without credentials.
 func webCORS(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 }

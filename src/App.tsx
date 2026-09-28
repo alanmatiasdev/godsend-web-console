@@ -4,6 +4,7 @@ import {
   ApiError, setApiBaseUrl, type BrowseResult, type InstallType, type Job, type ServerConfig, type Source,
 } from './api'
 import { useI18n, type Translate, type TranslationKey } from './i18n'
+import { ContentManager, FtpManager, IsoTools, SaveManager } from './management'
 
 const platforms = [
   { id: 'xbox360', label: 'platformXbox360' },
@@ -21,7 +22,7 @@ const sources: { id: Source; label: TranslationKey }[] = [
   { id: 'ia', label: 'sourceIa' },
 ]
 
-type Page = 'catalog' | 'queue' | 'settings'
+type Page = 'catalog' | 'queue' | 'ftp' | 'content' | 'saves' | 'iso' | 'settings'
 
 class LocalizedError extends Error {
   constructor(public key: TranslationKey) { super(key) }
@@ -248,6 +249,10 @@ export default function App() {
       <nav aria-label={t('mainNavigation')}>
         <button className={page === 'catalog' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('catalog')}><span className="nav-glyph">▤</span>{t('catalog')}</button>
         <button className={page === 'queue' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('queue')}><span className="nav-glyph">◷</span>{t('queue')} {activeJobs > 0 && <span className="nav-count">{activeJobs}</span>}</button>
+        <button className={page === 'ftp' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('ftp')}><span className="nav-glyph">▦</span>{t('ftpManager')}</button>
+        <button className={page === 'content' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('content')}><span className="nav-glyph">+</span>{t('content')}</button>
+        <button className={page === 'saves' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('saves')}><span className="nav-glyph">◫</span>{t('saves')}</button>
+        <button className={page === 'iso' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('iso')}><span className="nav-glyph">◇</span>{t('isoTools')}</button>
         <button className={page === 'settings' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('settings')}><span className="nav-glyph">⚙</span>{t('connection')}</button>
       </nav>
       <div className="rail-bottom">
@@ -265,7 +270,7 @@ export default function App() {
     </aside>
 
     <main className="main-content">
-      <header className="topbar"><span>GODsend / {t(page === 'catalog' ? 'catalog' : page === 'queue' ? 'queue' : 'connection')}</span><div className="topbar-right"><label className="language-control"><span>{t('language')}</span><select aria-label={t('language')} value={language} onChange={event => setLanguage(event.target.value as 'en' | 'pt-BR')}><option value="en">EN</option><option value="pt-BR">PT-BR</option></select></label><span className="server-label">{t('backend')}</span><span className={config ? 'server-pill online' : 'server-pill'}>{config ? t('online') : t('offline')}</span></div></header>
+      <header className="topbar"><span>GODsend / {t(page === 'catalog' ? 'catalog' : page === 'queue' ? 'queue' : page === 'ftp' ? 'ftpManager' : page === 'content' ? 'content' : page === 'saves' ? 'saves' : page === 'iso' ? 'isoTools' : 'connection')}</span><div className="topbar-right"><label className="language-control"><span>{t('language')}</span><select aria-label={t('language')} value={language} onChange={event => setLanguage(event.target.value as 'en' | 'pt-BR')}><option value="en">EN</option><option value="pt-BR">PT-BR</option></select></label><span className="server-label">{t('backend')}</span><span className={config ? 'server-pill online' : 'server-pill'}>{config ? t('online') : t('offline')}</span></div></header>
       {notice && <div className="toast" role="status">{t(notice)}</div>}
       {Boolean(serverError) && <div className="server-alert" role="alert">{t('serverUnavailable', { error: message(serverError, t) })} <button onClick={refreshConfig}>{t('tryAgain')}</button></div>}
 
@@ -288,6 +293,11 @@ export default function App() {
       </div>}
 
       {page === 'queue' && <div className="page-content narrow"><div className="page-intro"><span className="eyebrow">{t('processingFtp')}</span><h1>{t('workInProgress')}</h1><p>{t('queueRefreshHint')}</p></div><section className="full-panel"><Jobs jobs={jobs} error={queueError} onRefresh={refreshQueue} /></section></div>}
+
+      {page === 'ftp' && <FtpManager xboxIp={xboxIp} />}
+      {page === 'content' && <ContentManager xboxIp={xboxIp} drive={config?.default_drive || 'Hdd1:'} />}
+      {page === 'saves' && <SaveManager xboxIp={xboxIp} drive={config?.default_drive || 'auto'} />}
+      {page === 'iso' && <IsoTools />}
 
       {page === 'settings' && <div className="page-content narrow"><div className="page-intro"><span className="eyebrow">{t('localNetwork')}</span><h1>{t('connectXbox')}</h1><p>{t('ftpDescription')}</p></div><section className="settings-panel"><div className="section-heading"><div><span className="eyebrow">XBOX 360</span><h2>{t('xboxAddress')}</h2></div></div><p>{t('xboxIpInstructions')}</p><div className="settings-form"><label className="field"><span>{t('xboxIp')}</span><input inputMode="decimal" value={ipInput} onChange={event => setIpInput(event.target.value)} placeholder="192.168.1.50" /></label><button className="button primary" onClick={saveXboxIp}>{t('saveAndTest')}</button></div>{xboxState === 'checking' && <p className="connection-message">{t('testingFtp')}</p>}{xboxState === 'connected' && <p className="connection-message success">{t('ftpConnected')}</p>}{Boolean(xboxError) && <p className="inline-error">{message(xboxError, t)}</p>}<div className="settings-note"><span className="eyebrow">{t('godsendServer')}</span><strong>{effectiveServerAddress}</strong><small>{t('sameOriginApi')}</small></div><div className="server-settings"><span className="eyebrow">{t('server')}</span><h2>{t('serverAddress')}</h2><p>{t('serverAddressInstructions')}</p><div className="settings-form"><label className="field"><span>{t('serverAddress')}</span><input type="url" inputMode="url" value={serverInput} onChange={event => setServerInput(event.target.value)} placeholder={window.location.origin} /></label><button className="button primary" disabled={serverSaving} onClick={() => void saveServerAddress()}>{serverSaving ? t('connecting') : t('saveAndConnect')}</button></div><div className="server-actions"><small>{t('defaultServer', { address: window.location.origin })}</small><button className="text-button" onClick={() => void saveServerAddress('')}>{t('useDefaultServer')}</button></div>{Boolean(serverInputError) && <p className="inline-error">{message(serverInputError, t)}</p>}</div></section></div>}
     </main>

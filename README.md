@@ -10,12 +10,12 @@ The official desktop renderer is already written in React, but most screens call
 | --- | --- | --- |
 | Browse and install | Browse and search local Transfer ISOs, Minerva, and Internet Archive across the listed Xbox platforms; choose drive and GOD/Content/XEX where applicable; register and trigger a job. | Cover art retrieval, ROM catalog browsing, source-specific guidance, and the richer disc/install details in the desktop browser. |
 | Xbox Library | — | Read the Aurora databases, browse installed games with artwork and metadata, inspect titles, refresh the library, and move games between drives. |
-| DLC and Title Updates | — | Discover installed and available DLC/TUs, install them, activate/deactivate TUs, delete content, and move content. |
-| Save games | — | Browse profiles and per-title saves, download/restore/copy/delete saves, and back up all profiles and saves. |
-| FTP Manager | Test Xbox FTP and list destination drives in the install dialog. | Browse files and folders, create/rename/delete, multi-select, cut/copy/paste, upload/download, and track FTP operations. |
-| ISO tools | The game install flow can request GOD/Content/XEX processing. | Standalone ISO to GOD and ISO to XEX conversion tools, file picking, disc probing, and optional transfers. |
+| DLC and Title Updates | Discover DLC and title updates by Title ID, queue installs, and activate/deactivate installed title updates. | Delete content and move installed content. |
+| Save games | Discover profiles, inspect per-title save files, back up a profile or every profile, and delete a profile's title save. | Restore/copy saves between profiles and KeyVault-assisted re-signing. |
+| FTP Manager | Test Xbox FTP, browse folders, create/delete folders and files, select multiple entries, move/copy them, queue uploads from server paths, and track FTP jobs. | Browser-local file picking/downloads; these need a server upload/download endpoint because a browser cannot pass a local host path to GODsend. |
+| ISO tools | Probe, convert ISO to GOD, and extract ISO to XEX using paths on the GODsend host. | Browser-local file picking and optional automatic FTP transfer. |
 | Aurora artwork | — | Search, preview, decode/encode, and upload cover, background, banner, icon, and screenshot assets; automatic artwork sync after transfers. |
-| Job queue | Read and refresh game pipeline jobs. | Unified game and FTP job view, progress/speed details, and removal of completed or stuck jobs. |
+| Job queue | Read and refresh game pipeline jobs; FTP job state and progress are available from FTP Manager. | Removal of completed/stuck pipeline jobs and a unified combined view. |
 | Xbox setup | Store the Xbox IP in this browser and test FTP connectivity. | Upload and patch Aurora scripts, choose FTP script path, edit FTP credentials, and scan/test connection settings. |
 | Server settings | Read the default destination drive from `/config`. | Configure Internet Archive login, Debrid providers, storage/Transfer/backup/temp paths, default drive, custom GOD/XEX and ROM paths, aria2 ports, cache refresh, and local data cleanup. |
 | Desktop operations | — | Start/restart/stop the backend, inspect live terminal and logs, launch at login, and use the tray. These are host-specific operations and need a different web/server design. |
