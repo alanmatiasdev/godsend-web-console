@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
-  addToWishlist, browse, enqueueGame, getConfig, getDiscInfo, getDrives, getRomSystems, pingXbox, searchArtwork,
-  ApiError, getUnifiedQueue, removeFtpJob, removeGameJob, setApiBaseUrl, type AuroraGame, type BrowseResult, type InstallType, type Job, type ServerConfig, type Source,
+  addToWishlist, artworkThumbnailUrl, browse, enqueueGame, getConfig, getDiscInfo, getDrives, getRomSystems, pingXbox, searchArtwork,
+  ApiError, getUnifiedQueue, removeFtpJob, removeGameJob, setApiBaseUrl, type AuroraGame, type BrowseResult, type DiscInfo, type InstallType, type Job, type ServerConfig, type Source,
 } from './api'
 import { useI18n, type Translate, type TranslationKey } from './i18n'
 import { ContentManager, FtpManager, IsoTools, SaveManager, XboxLibrary } from './management'
 import { IsoUpload, WaitingQueue, Wishlist, useScheduler } from './queue'
 import { ServerTools } from './settings-tools'
+import { ServerLogs } from './logs'
 
 const platforms = [
   { id: 'xbox360', label: 'platformXbox360' },
@@ -25,13 +26,13 @@ const sources: { id: Source; label: TranslationKey }[] = [
   { id: 'rom', label: 'sourceRom' },
 ]
 
-type Page = 'catalog' | 'queue' | 'wishlist' | 'library' | 'ftp' | 'content' | 'saves' | 'iso' | 'settings'
+type Page = 'catalog' | 'queue' | 'wishlist' | 'library' | 'ftp' | 'content' | 'saves' | 'iso' | 'logs' | 'settings'
 type RouteState = { page: Page; source: Source; platform: string; search: string; limit: number }
 
 function readRouteState(): RouteState {
   const params = new URLSearchParams(window.location.search)
   const requestedPage = params.get('view') as Page | null
-  const validPages: Page[] = ['catalog', 'queue', 'wishlist', 'library', 'ftp', 'content', 'saves', 'iso', 'settings']
+  const validPages: Page[] = ['catalog', 'queue', 'wishlist', 'library', 'ftp', 'content', 'saves', 'iso', 'logs', 'settings']
   const requestedSource = params.get('source') as Source | null
   const validSources: Source[] = ['local', 'minerva', 'ia', 'rom']
   const source = requestedSource && validSources.includes(requestedSource) ? requestedSource : 'minerva'
@@ -115,6 +116,11 @@ function Jobs({ jobs, error, onRefresh, onRemoved }: { jobs: Job[]; error: unkno
   </div>
 }
 
+function CatalogCover({ game, source }: { game: string; source: Source }) {
+  const [failed, setFailed] = useState(false)
+  return <span className="catalog-cover" aria-hidden="true">{source !== 'rom' && !failed ? <img src={artworkThumbnailUrl(game)} alt="" loading="lazy" onError={() => setFailed(true)} /> : game.slice(0, 1).toUpperCase()}</span>
+}
+
 function QueueDialog({ game, platform, source, ip, defaultDrive, onClose, onQueued, onWishlisted }: {
   game: string; platform: string; source: Source; ip: string; defaultDrive: string;
   onClose: () => void; onQueued: (status: string) => void; onWishlisted: () => void
@@ -124,6 +130,7 @@ function QueueDialog({ game, platform, source, ip, defaultDrive, onClose, onQueu
   const [drive, setDrive] = useState(defaultDrive || 'Hdd1:')
   const [installType, setInstallType] = useState<InstallType>('god')
   const [notes, setNotes] = useState('')
+  const [discInfo, setDiscInfo] = useState<DiscInfo | null>(null)
   const [cover, setCover] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
@@ -134,6 +141,7 @@ function QueueDialog({ game, platform, source, ip, defaultDrive, onClose, onQueu
     if (isIp(ip)) getDrives(ip).then(data => { if (active) setDrives(data) }).catch(() => {})
     if (hasMethods) getDiscInfo(game).then(info => {
       if (!active || !info) return
+      setDiscInfo(info)
       if (info.recommendation && ['god', 'content', 'xex'].includes(info.recommendation)) setInstallType(info.recommendation)
       if (info.notes) setNotes(info.notes)
     })
@@ -164,6 +172,7 @@ function QueueDialog({ game, platform, source, ip, defaultDrive, onClose, onQueu
       <p className="modal-subtitle">{source === 'local' ? t('localLibrary') : `${t(sources.find(item => item.id === source)?.label || 'sourceMinerva')} · ${platform.startsWith('rom_') ? platform.slice(4).toUpperCase() : t(platforms.find(item => item.id === platform)?.label || 'platformXbox360')}`}</p>
       {cover && <img className="queue-dialog-cover" src={cover} alt={t('artworkCover')} />}
       <p className="source-guidance">{t(source === 'local' ? 'guidanceLocal' : source === 'minerva' ? 'guidanceMinerva' : source === 'ia' ? 'guidanceIa' : 'guidanceRom')}</p>
+      {discInfo && <div className="queue-disc-details"><span className="eyebrow">{t('discInfo')} · {t(discInfo.probed ? 'discInfoExact' : 'discInfoEstimated')}</span><div><span>{t('titleId')}: <strong>{discInfo.title_id || '—'}</strong></span><span>{t('disc', { number: discInfo.disc_number || '?', count: discInfo.disc_count || '?' })}</span><span>{t('recommendedFormat')}: <strong>{discInfo.recommendation?.toUpperCase() || '—'}</strong></span></div></div>}
       <label className="field"><span>{t('destinationDrive')}</span>
         <select value={drive} onChange={event => setDrive(event.target.value)}>
           {[...new Set([drive, defaultDrive, ...drives].filter(Boolean))].map(item => <option key={item}>{item}</option>)}
@@ -347,6 +356,7 @@ export default function App() {
         <button className={page === 'content' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('content')}><span className="nav-glyph">+</span>{t('content')}</button>
         <button className={page === 'saves' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('saves')}><span className="nav-glyph">◫</span>{t('saves')}</button>
         <button className={page === 'iso' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('iso')}><span className="nav-glyph">◇</span>{t('isoTools')}</button>
+        <button className={page === 'logs' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('logs')}><span className="nav-glyph">≡</span>{t('serverLogs')}</button>
         <button className={page === 'settings' ? 'nav-item current' : 'nav-item'} onClick={() => setPage('settings')}><span className="nav-glyph">⚙</span>{t('connection')}</button>
       </nav>
       <div className="rail-bottom">
@@ -364,7 +374,7 @@ export default function App() {
     </aside>
 
     <main className="main-content">
-      <header className="topbar"><div className="topbar-start"><button ref={menuButton} className="mobile-menu-button" aria-label={t('openNavigation')} aria-expanded={mobileMenuOpen} aria-controls="main-sidebar" onClick={() => setMobileMenuOpen(true)}><span aria-hidden="true">☰</span></button><span>GODsend / {t(page === 'catalog' ? 'catalog' : page === 'queue' ? 'queue' : page === 'wishlist' ? 'wishlist' : page === 'library' ? 'xboxLibrary' : page === 'ftp' ? 'ftpManager' : page === 'content' ? 'content' : page === 'saves' ? 'saves' : page === 'iso' ? 'isoTools' : 'connection')}</span></div><div className="topbar-right"><label className="language-control"><span>{t('language')}</span><select aria-label={t('language')} value={language} onChange={event => setLanguage(event.target.value as 'en' | 'pt-BR')}><option value="en">EN</option><option value="pt-BR">PT-BR</option></select></label><span className="server-label">{t('backend')}</span><span className={config ? 'server-pill online' : 'server-pill'}>{config ? t('online') : t('offline')}</span></div></header>
+      <header className="topbar"><div className="topbar-start"><button ref={menuButton} className="mobile-menu-button" aria-label={t('openNavigation')} aria-expanded={mobileMenuOpen} aria-controls="main-sidebar" onClick={() => setMobileMenuOpen(true)}><span aria-hidden="true">☰</span></button><span>GODsend / {t(page === 'catalog' ? 'catalog' : page === 'queue' ? 'queue' : page === 'wishlist' ? 'wishlist' : page === 'library' ? 'xboxLibrary' : page === 'ftp' ? 'ftpManager' : page === 'content' ? 'content' : page === 'saves' ? 'saves' : page === 'iso' ? 'isoTools' : page === 'logs' ? 'serverLogs' : 'connection')}</span></div><div className="topbar-right"><label className="language-control"><span>{t('language')}</span><select aria-label={t('language')} value={language} onChange={event => setLanguage(event.target.value as 'en' | 'pt-BR')}><option value="en">EN</option><option value="pt-BR">PT-BR</option></select></label><span className="server-label">{t('backend')}</span><span className={config ? 'server-pill online' : 'server-pill'}>{config ? t('online') : t('offline')}</span></div></header>
       {notice && <div className="toast" role="status">{t(notice)}</div>}
       {Boolean(serverError) && <div className="server-alert" role="alert">{t('serverUnavailable', { error: message(serverError, t) })} <button onClick={refreshConfig}>{t('tryAgain')}</button></div>}
 
@@ -381,7 +391,7 @@ export default function App() {
             {catalogState === 'error' && <div className="empty-state"><span className="empty-mark">!</span><p>{t('failedToLoadGames')}</p><small>{message(catalogError, t)}</small><button className="button secondary" onClick={refreshCatalog}>{t('tryAgain')}</button></div>}
             {catalogState === 'ready' && catalog.loading && <div className="empty-state"><span className="empty-mark">◌</span><p>{t('catalogPreparing')}</p><small>{t('catalogProgress', { loaded: catalog.loading.loaded, total: catalog.loading.total })}</small></div>}
             {catalogState === 'ready' && !catalog.loading && filtered.length === 0 && <div className="empty-state"><span className="empty-mark">□</span><p>{t(search ? 'noSearchMatches' : source === 'local' ? 'noLocalIso' : 'noGamesFromSource')}</p><small>{t(source === 'local' && !search ? 'addIsoToTransfer' : 'tryOtherSource')}</small></div>}
-            {catalogState === 'ready' && !catalog.loading && filtered.slice(0, limit).map((game, index) => <button className="game-row" key={`${game}-${index}`} onClick={() => setSelected(game)}><span className="game-index">{String(index + 1).padStart(3, '0')}</span><span className="game-title">{game}</span><span className="game-action">{t('add')} <span aria-hidden="true">↗</span></span></button>)}
+            {catalogState === 'ready' && !catalog.loading && filtered.slice(0, limit).map((game, index) => <button className="game-row" key={`${serverUrl}-${source}-${game}-${index}`} onClick={() => setSelected(game)}><span className="game-index">{String(index + 1).padStart(3, '0')}</span><CatalogCover game={game} source={source} /><span className="game-title">{game}</span><span className="game-action">{t('add')} <span aria-hidden="true">↗</span></span></button>)}
             {filtered.length > limit && <button className="load-more" onClick={() => setLimit(value => value + 80)}>{t('showMoreTitles', { count: Math.min(80, filtered.length - limit) })}</button>}
           </div>
         </section><aside className="activity-panel"><Jobs jobs={jobs.slice(0, 6)} error={queueError} onRefresh={refreshQueue} onRemoved={() => void refreshQueue()} />{jobs.length > 6 && <button className="view-all" onClick={() => setPage('queue')}>{t('viewAllJobs')}</button>}<div className="info-block"><span className="eyebrow">{t('destination')}</span><strong>{xboxIp || t('xboxNotConfigured')}</strong><small>{xboxIp ? t('defaultDrive', { drive: config?.default_drive || 'Hdd1:' }) : t('configureConsole')}</small><button onClick={() => setPage('settings')}>{t('openConnection')}</button></div></aside></div>
@@ -395,7 +405,8 @@ export default function App() {
       {page === 'ftp' && <FtpManager xboxIp={xboxIp} />}
       {page === 'content' && <ContentManager key={librarySelection?.contentId || 'manual'} xboxIp={xboxIp} drive={librarySelection?.sourceDrive || config?.default_drive || 'Hdd1:'} initialTitleId={librarySelection?.titleId} initialGameName={librarySelection?.name} />}
       {page === 'saves' && <SaveManager key={librarySelection?.contentId || 'manual'} xboxIp={xboxIp} drive={librarySelection?.sourceDrive || config?.default_drive || 'auto'} initialTitleId={librarySelection?.titleId} />}
-      {page === 'iso' && <IsoTools xboxIp={xboxIp} defaultDrive={config?.default_drive || 'Hdd1:'} />}
+      {page === 'iso' && <IsoTools xboxIp={xboxIp} serverConfig={config || { default_drive: 'Hdd1:' }} />}
+      {page === 'logs' && <ServerLogs serverUrl={serverUrl} />}
 
       {page === 'settings' && <div className="page-content narrow"><div className="page-intro"><span className="eyebrow">{t('localNetwork')}</span><h1>{t('connectXbox')}</h1><p>{t('ftpDescription')}</p></div><section className="settings-panel"><div className="section-heading"><div><span className="eyebrow">XBOX 360</span><h2>{t('xboxAddress')}</h2></div></div><p>{t('xboxIpInstructions')}</p><div className="settings-form"><label className="field"><span>{t('xboxIp')}</span><input inputMode="decimal" value={ipInput} onChange={event => setIpInput(event.target.value)} placeholder="192.168.1.50" /></label><button className="button primary" onClick={saveXboxIp}>{t('saveAndTest')}</button></div>{xboxState === 'checking' && <p className="connection-message">{t('testingFtp')}</p>}{xboxState === 'connected' && <p className="connection-message success">{t('ftpConnected')}</p>}{Boolean(xboxError) && <p className="inline-error">{message(xboxError, t)}</p>}<div className="settings-note"><span className="eyebrow">{t('godsendServer')}</span><strong>{effectiveServerAddress}</strong><small>{t('sameOriginApi')}</small></div><div className="server-settings"><span className="eyebrow">{t('server')}</span><h2>{t('serverAddress')}</h2><p>{t('serverAddressInstructions')}</p><div className="settings-form"><label className="field"><span>{t('serverAddress')}</span><input type="url" inputMode="url" value={serverInput} onChange={event => setServerInput(event.target.value)} placeholder={window.location.origin} /></label><button className="button primary" disabled={serverSaving} onClick={() => void saveServerAddress()}>{serverSaving ? t('connecting') : t('saveAndConnect')}</button></div><div className="server-actions"><small>{t('defaultServer', { address: window.location.origin })}</small><button className="text-button" onClick={() => void saveServerAddress('')}>{t('useDefaultServer')}</button></div>{Boolean(serverInputError) && <p className="inline-error">{message(serverInputError, t)}</p>}</div></section><ServerTools xboxIp={xboxIp} serverUrl={serverUrl} /></div>}
     </main>

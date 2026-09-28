@@ -63,13 +63,28 @@ export function ArtworkDialog({ xboxIp, root, game, onClose }: { xboxIp: string;
     catch (cause) { setError(errorText(cause)) }
   }
 
-  function pickFile(event: ChangeEvent<HTMLInputElement>) {
+  async function pickFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     event.target.value = ''
     if (!file) return
     setNotice(''); setSelectedResult(null)
-    if (file.type !== 'image/png' && file.type !== 'image/jpeg') { setError(t('artworkFormats')); return }
-    setError(''); setCandidate({ blob: file, preview: URL.createObjectURL(file) })
+    if (file.size > 16 * 1024 * 1024) { setError(t('artworkFormats')); return }
+    const type = file.type || (/\.gif$/i.test(file.name) ? 'image/gif' : /\.bmp$/i.test(file.name) ? 'image/bmp' : '')
+    if (!['image/png', 'image/jpeg', 'image/gif', 'image/bmp', 'image/x-ms-bmp'].includes(type)) { setError(t('artworkFormats')); return }
+    try {
+      let image: Blob = file
+      if (type !== 'image/png' && type !== 'image/jpeg') {
+        const bitmap = await createImageBitmap(file)
+        const canvas = document.createElement('canvas')
+        canvas.width = bitmap.width; canvas.height = bitmap.height
+        const context = canvas.getContext('2d')
+        if (!context) { bitmap.close(); throw new Error(t('artworkFormats')) }
+        context.drawImage(bitmap, 0, 0)
+        bitmap.close()
+        image = await new Promise<Blob>((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error(t('artworkFormats'))), 'image/png'))
+      }
+      setError(''); setCandidate({ blob: image, preview: URL.createObjectURL(image) })
+    } catch (cause) { setError(errorText(cause)) }
   }
 
   async function upload() {
@@ -103,7 +118,7 @@ export function ArtworkDialog({ xboxIp, root, game, onClose }: { xboxIp: string;
         ? <p className="hint">{t('noArtworkResults')}</p>
         : <div className="artwork-results">{results.map((result, index) => <button key={index} className="artwork-result" aria-pressed={selectedResult === result} onClick={() => void pickResult(result)}><img src={result.image} alt="" /><span>{result.source}{result.official ? ` · ${t('artworkOfficial')}` : ''}</span></button>)}</div>)}
       <div className="artwork-file">
-        <label className="button secondary"><input className="visually-hidden" type="file" accept="image/png,image/jpeg" onChange={pickFile} />{t('chooseImageFile')}</label>
+        <label className="button secondary"><input className="visually-hidden" type="file" accept="image/png,image/jpeg,image/gif,image/bmp,.bmp" onChange={event => void pickFile(event)} />{t('chooseImageFile')}</label>
         <small>{t('artworkFormats')}</small>
       </div>
       {/^(icon|banner|screenshot)/.test(type) && <p className="modal-subtitle">{t('artworkSharedHint')}</p>}

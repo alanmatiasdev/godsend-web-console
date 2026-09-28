@@ -35,6 +35,18 @@ func (d *Deps) handleWebUIUpload(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		jsonError(w, stdhttp.StatusBadRequest, "files required")
 		return
 	}
+	var relativePaths []string
+	if raw := r.FormValue("paths"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &relativePaths); err != nil || len(relativePaths) != len(files) {
+			jsonError(w, stdhttp.StatusBadRequest, "invalid relative paths")
+			return
+		}
+	} else {
+		relativePaths = make([]string, len(files))
+		for i, header := range files {
+			relativePaths[i] = header.Filename
+		}
+	}
 	tempDir, err := os.MkdirTemp("", "godsend-webui-upload-")
 	if err != nil {
 		jsonError(w, stdhttp.StatusInternalServerError, err.Error())
@@ -46,25 +58,45 @@ func (d *Deps) handleWebUIUpload(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 			_ = os.RemoveAll(tempDir)
 		}
 	}()
+	filesRoot := filepath.Join(tempDir, "files")
+	if err := os.MkdirAll(filesRoot, 0755); err != nil {
+		jsonError(w, 500, err.Error())
+		return
+	}
 	localPaths := make([]string, 0, len(files))
 	seen := make(map[string]bool, len(files))
-	for _, header := range files {
-		name := path.Base(strings.ReplaceAll(header.Filename, "\\", "/"))
-		if name == "." || name == "/" || name == "" {
-			jsonError(w, stdhttp.StatusBadRequest, "Invalid file name")
+	directories := make(map[string]bool)
+	for index, header := range files {
+		relative := strings.ReplaceAll(relativePaths[index], "\\", "/")
+		clean := path.Clean(relative)
+		if relative == "" || strings.HasPrefix(clean, "/") || clean == ".." || strings.HasPrefix(clean, "../") || strings.ContainsRune(clean, 0) {
+			jsonError(w, stdhttp.StatusBadRequest, "Invalid relative file path")
 			return
 		}
-		if seen[strings.ToLower(name)] {
-			jsonError(w, stdhttp.StatusBadRequest, "Selected files contain duplicate names")
+		parts := strings.Split(clean, "/")
+		for _, part := range parts {
+			if part == "" || part == "." || part == ".." || strings.Contains(part, ":") {
+				jsonError(w, stdhttp.StatusBadRequest, "Invalid relative file path")
+				return
+			}
+		}
+		key := strings.ToLower(clean)
+		if seen[key] {
+			jsonError(w, stdhttp.StatusBadRequest, "Selected files contain duplicate paths")
 			return
 		}
-		seen[strings.ToLower(name)] = true
+		seen[key] = true
 		source, err := header.Open()
 		if err != nil {
 			jsonError(w, stdhttp.StatusBadRequest, err.Error())
 			return
 		}
-		target := filepath.Join(tempDir, name)
+		target := filepath.Join(filesRoot, filepath.FromSlash(clean))
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			source.Close()
+			jsonError(w, 500, err.Error())
+			return
+		}
 		out, err := os.Create(target)
 		if err != nil {
 			source.Close()
@@ -82,7 +114,14 @@ func (d *Deps) handleWebUIUpload(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 			jsonError(w, stdhttp.StatusInternalServerError, closeErr.Error())
 			return
 		}
-		localPaths = append(localPaths, target)
+		rootName := parts[0]
+		rootPath := filepath.Join(filesRoot, rootName)
+		if len(parts) == 1 {
+			localPaths = append(localPaths, target)
+		} else if !directories[rootPath] {
+			localPaths = append(localPaths, rootPath)
+			directories[rootPath] = true
+		}
 	}
 	jobs := d.FTPMgr.Upload(ip, localPaths, remoteDir)
 	jobIDs := make(map[int64]bool, len(jobs))

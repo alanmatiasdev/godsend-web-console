@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { clearServerData, getCacheStatus, getDataStatus, refreshCaches, testXboxCredentials, uploadAuroraScripts, type CacheStatus, type DataStatus } from './api'
+import { clearServerData, getArtworkSyncConfig, getCacheStatus, getDataStatus, refreshCaches, saveArtworkSyncConfig, testXboxCredentials, uploadAuroraScripts, type CacheStatus, type DataStatus } from './api'
 import { useI18n } from './i18n'
 
 function errorText(cause: unknown): string { return cause instanceof Error ? cause.message : String(cause) }
@@ -19,6 +19,10 @@ export function ServerTools({ xboxIp, serverUrl }: { xboxIp: string; serverUrl: 
   const [ftpPassword, setFtpPassword] = useState('')
   const [ftpTest, setFtpTest] = useState<{ ok: boolean; log: string[] } | null>(null)
   const [testingFtp, setTestingFtp] = useState(false)
+  const [artworkRoot, setArtworkRoot] = useState(() => { try { return localStorage.getItem('godsend.auroraRoot') || '/Hdd1/Aurora' } catch { return '/Hdd1/Aurora' } })
+  const [artworkEnabled, setArtworkEnabled] = useState(false)
+  const [artworkMessage, setArtworkMessage] = useState('')
+  const [artworkBusy, setArtworkBusy] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -31,6 +35,7 @@ export function ServerTools({ xboxIp, serverUrl }: { xboxIp: string; serverUrl: 
     const url = new URL(serverUrl || window.location.origin)
     setServerIp(url.hostname); setServerPort(serverUrl ? url.port || '8080' : '8080')
   }, [serverUrl])
+  useEffect(() => { void getArtworkSyncConfig().then(config => { setArtworkEnabled(config.enabled); if (config.aurora_root) setArtworkRoot(config.aurora_root) }).catch(() => {}) }, [serverUrl])
 
   async function perform(action: () => Promise<void>, success: string) {
     setBusy(true); setError(''); setNotice('')
@@ -48,6 +53,15 @@ export function ServerTools({ xboxIp, serverUrl }: { xboxIp: string; serverUrl: 
     finally { setTestingFtp(false) }
   }
 
+  async function saveArtworkConfig() {
+    setArtworkBusy(true); setArtworkMessage('')
+    try {
+      await saveArtworkSyncConfig({ enabled: artworkEnabled, xbox_ip: xboxIp, aurora_root: artworkRoot.trim() })
+      setArtworkMessage(t('artworkSyncSaved'))
+    } catch (cause) { setArtworkMessage(errorText(cause)) }
+    finally { setArtworkBusy(false) }
+  }
+
   return <div className="settings-tools">
     <section className="settings-panel maintenance-panel">
       <div className="section-heading"><div><span className="eyebrow">GODSEND</span><h2>{t('serverMaintenance')}</h2></div><button className="button secondary" disabled={busy} onClick={() => void load()}>{t('refresh')}</button></div>
@@ -62,6 +76,13 @@ export function ServerTools({ xboxIp, serverUrl }: { xboxIp: string; serverUrl: 
       <p>{t('installAuroraScriptsHint')}</p>
       <div className="settings-grid"><label className="field"><span>{t('scriptsDirectory')}</span><input value={scriptsDir} onChange={event => setScriptsDir(event.target.value)} placeholder="/srv/godsend/aurora-scripts" /></label><label className="field"><span>{t('scriptsDestination')}</span><input value={remotePath} onChange={event => setRemotePath(event.target.value)} /></label><label className="field"><span>{t('serverIpForXbox')}</span><input value={serverIp} onChange={event => setServerIp(event.target.value)} inputMode="decimal" /></label><label className="field"><span>{t('serverPortForXbox')}</span><input value={serverPort} onChange={event => setServerPort(event.target.value)} inputMode="numeric" /></label></div>
       <div className="maintenance-actions"><button className="button primary" disabled={busy || !xboxIp || !scriptsDir.trim() || !remotePath.startsWith('/') || !serverIp.trim() || !validPort} onClick={() => void perform(() => uploadAuroraScripts(xboxIp, scriptsDir.trim(), remotePath.trim(), serverIp.trim(), serverPort.trim()), t('scriptsQueued'))}>{t('uploadScripts')}</button></div>
+    </section>
+    <section className="settings-panel artwork-sync-panel">
+      <div className="section-heading"><div><span className="eyebrow">AURORA</span><h2>{t('artworkSyncTitle')}</h2></div></div>
+      <p>{t('artworkSyncHint')}</p>
+      <div className="settings-grid"><label className="field"><span>{t('auroraRoot')}</span><input value={artworkRoot} onChange={event => setArtworkRoot(event.target.value)} placeholder="/Hdd1/Aurora" /></label><label className="check-field"><input type="checkbox" checked={artworkEnabled} onChange={event => setArtworkEnabled(event.target.checked)} />{t('autoArtworkAfterFtp')}</label></div>
+      <div className="maintenance-actions"><button className="button primary" disabled={artworkBusy || !xboxIp || !/^\/[A-Za-z0-9]+\//.test(artworkRoot.trim())} onClick={() => void saveArtworkConfig()}>{t('saveArtworkSync')}</button></div>
+      {artworkMessage && <p className="connection-message">{artworkMessage}</p>}
     </section>
     <section className="settings-panel ftp-test-panel">
       <div className="section-heading"><div><span className="eyebrow">XBOX FTP</span><h2>{t('ftpCredentialTest')}</h2></div></div>

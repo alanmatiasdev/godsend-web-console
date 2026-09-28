@@ -26,6 +26,11 @@ export function getApiBaseUrl(): string {
   return apiBaseUrl
 }
 
+export function artworkThumbnailUrl(game: string): string {
+  const path = query('/webui/artwork/thumbnail', { query: game })
+  return apiBaseUrl ? new URL(path, `${apiBaseUrl}/`).toString() : path
+}
+
 async function request(path: string, init?: RequestInit, baseUrl = apiBaseUrl, timeoutMs = 12000): Promise<Response> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
@@ -68,6 +73,18 @@ export async function getConfig(baseUrl?: string): Promise<ServerConfig> {
 
 export type DataStatus = { active_jobs: number; pending_ftp_jobs: number; local_data_bytes: number }
 export type CacheStatus = Record<string, { state: string; loaded: number; total: number; games: number }>
+export type ServerLog = { id: number; line: string }
+export type ArtworkSyncConfig = { enabled: boolean; xbox_ip: string; aurora_root: string }
+export async function getServerLogs(after = 0): Promise<ServerLog[]> {
+  const data = await (await request(query('/webui/logs', { after: String(after) }))).json() as { logs?: ServerLog[] }
+  return Array.isArray(data.logs) ? data.logs : []
+}
+export async function getArtworkSyncConfig(): Promise<ArtworkSyncConfig> { return (await request('/webui/artwork/config')).json() }
+export async function saveArtworkSyncConfig(config: ArtworkSyncConfig): Promise<ArtworkSyncConfig> { return jsonRequest('/webui/artwork/config', config) }
+export async function syncAuroraArtwork(ip: string, root: string, titles: Array<{ title_id: string; name: string }>): Promise<number> {
+  const data = await jsonRequest<{ queued: number }>('/webui/artwork/sync', { xbox_ip: ip, aurora_root: root, titles })
+  return data.queued
+}
 export async function getDataStatus(): Promise<DataStatus> { return (await request('/data/status')).json() }
 export async function clearServerData(): Promise<void> { await request('/data/clear', { method: 'POST' }) }
 export async function getCacheStatus(): Promise<CacheStatus> { return (await request('/cache-status')).json() }
@@ -110,6 +127,7 @@ export async function uploadBrowserFiles(ip: string, remotePath: string, files: 
   const body = new FormData()
   body.set('ip', ip)
   body.set('remote_path', remotePath)
+  body.set('paths', JSON.stringify(files.map(file => (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name)))
   for (const file of files) body.append('files', file, file.name)
   await request('/webui/upload-file', { method: 'POST', body }, apiBaseUrl, 30 * 60 * 1000)
 }
@@ -384,7 +402,8 @@ export async function testXboxCredentials(ip: string, user: string, password: st
   return jsonRequest('/ftp/test', { ip, user, password }, 'POST', 30000)
 }
 
-export async function getDiscInfo(game: string): Promise<{ recommendation?: InstallType; notes?: string } | null> {
+export type DiscInfo = { recommendation?: InstallType; notes?: string; title_id?: string; disc_number?: number; disc_count?: number; probed?: boolean }
+export async function getDiscInfo(game: string): Promise<DiscInfo | null> {
   try {
     return await (await request(query('/disc-info', { game }))).json()
   } catch {

@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import {
   backupAllSaves, convertIso, copyFtp, copySave, deleteFtp, deleteSave, discoverSaves, downloadBrowserArchive, downloadBrowserFile, downloadSave,
   getContent, getFtpJobs, getServerPaths, getTitleUpdates, listFtp, listSaves, mkdirFtp, probeIso,
-  queueContent, removeFtpJob, renameFtp, setTitleUpdateActive, uploadBrowserFiles, uploadFtp, uploadIso,
+  queueContent, removeFtpJob, renameFtp, setTitleUpdateActive, syncAuroraArtwork, uploadBrowserFiles, uploadFtp, uploadIso,
   deleteInstalledContent, discoverAuroraRoot, getAuroraCover, getDrives, loadAuroraLibrary, moveInstalledContent, moveXboxGame,
   type AuroraGame,
   type ContentItem, type ContentManifest, type FtpEntry, type FtpJob, type IsoInfo, type SaveEntry, type SaveProfile,
+  type ServerConfig,
 } from './api'
 import { ArtworkDialog } from './artwork'
 import { useI18n } from './i18n'
@@ -68,6 +69,8 @@ export function XboxLibrary({ xboxIp, onOpenContent, onOpenSaves }: { xboxIp: st
   const [targetByGame, setTargetByGame] = useState<Record<number, string>>({})
   const [moving, setMoving] = useState<number | null>(null)
   const [artworkGame, setArtworkGame] = useState<AuroraGame | null>(null)
+  const [syncingArtwork, setSyncingArtwork] = useState(false)
+  const [expandedContentId, setExpandedContentId] = useState<number | null>(null)
 
   const load = useCallback(async (requestedRoot = rootInput) => {
     if (!xboxIp) return
@@ -92,16 +95,30 @@ export function XboxLibrary({ xboxIp, onOpenContent, onOpenSaves }: { xboxIp: st
     catch (cause) { setError(errorText(cause)) }
     finally { setMoving(null) }
   }
+  async function syncAllArtwork() {
+    const unique = new Map(games.filter(game => /^[0-9A-F]{8}$/i.test(game.titleId)).map(game => [game.titleId.toUpperCase(), { title_id: game.titleId.toUpperCase(), name: game.name }]))
+    if (!unique.size) return
+    setSyncingArtwork(true); setError(''); setNotice('')
+    try {
+      const titles = [...unique.values()]
+      for (let index = 0; index < titles.length; index += 200) await syncAuroraArtwork(xboxIp, root, titles.slice(index, index + 200))
+      setNotice(t('artworkBulkQueued', { count: titles.length }))
+    } catch (cause) { setError(errorText(cause)) }
+    finally { setSyncingArtwork(false) }
+  }
 
   return <div className="page-content tool-page">
     <div className="page-intro"><span className="eyebrow">XBOX / AURORA</span><h1>{t('xboxLibraryTitle')}</h1><p>{t('xboxLibraryDescription')}</p></div>
     {!xboxIp ? <div className="empty-state panel-message"><p>{t('xboxRequired')}</p></div> : <>
-      <section className="tool-panel library-controls"><label className="compact-field grow"><span>{t('auroraRoot')}</span><input value={rootInput} onChange={event => setRootInput(event.target.value)} placeholder="/Hdd1/Aurora" /></label><button className="button primary" disabled={busy} onClick={() => void load()}>{busy ? t('loadingLibrary') : t('refreshLibrary')}</button><label className="search-field library-search"><span aria-hidden="true">⌕</span><input value={search} onChange={event => setSearch(event.target.value)} placeholder={t('searchGames')} aria-label={t('searchGames')} /></label><label className="compact-field library-sort"><span>{t('sortBy')}</span><select value={sortBy} onChange={event => setSortBy(event.target.value as 'name' | 'recent' | 'played')}><option value="name">{t('sortName')}</option><option value="recent">{t('sortRecent')}</option><option value="played">{t('sortMostPlayed')}</option></select></label><label className="check-field library-favorites"><input type="checkbox" checked={favoritesOnly} onChange={event => setFavoritesOnly(event.target.checked)} />{t('favoritesOnly')}</label><span className="result-count">{t('manyTitles', { count: filtered.length })}</span></section>
+      <section className="tool-panel library-controls"><label className="compact-field grow"><span>{t('auroraRoot')}</span><input value={rootInput} onChange={event => setRootInput(event.target.value)} placeholder="/Hdd1/Aurora" /></label><button className="button primary" disabled={busy} onClick={() => void load()}>{busy ? t('loadingLibrary') : t('refreshLibrary')}</button><button className="button secondary" disabled={busy || syncingArtwork || !games.length || !root} onClick={() => void syncAllArtwork()}>{syncingArtwork ? t('syncingArtwork') : t('syncLibraryArtwork')}</button><label className="search-field library-search"><span aria-hidden="true">⌕</span><input value={search} onChange={event => setSearch(event.target.value)} placeholder={t('searchGames')} aria-label={t('searchGames')} /></label><label className="compact-field library-sort"><span>{t('sortBy')}</span><select value={sortBy} onChange={event => setSortBy(event.target.value as 'name' | 'recent' | 'played')}><option value="name">{t('sortName')}</option><option value="recent">{t('sortRecent')}</option><option value="played">{t('sortMostPlayed')}</option></select></label><label className="check-field library-favorites"><input type="checkbox" checked={favoritesOnly} onChange={event => setFavoritesOnly(event.target.checked)} />{t('favoritesOnly')}</label><span className="result-count">{t('manyTitles', { count: filtered.length })}</span></section>
       {error && <p className="inline-error">{error}</p>}{notice && <p className="connection-message success">{notice}</p>}
       <section className="tool-panel library-list"><div className="library-list-head"><span>{t('game')}</span><span>{t('titleId')}</span><span>{t('drive')}</span><span>{t('move')}</span><span>{t('manage')}</span></div>
         {busy && games.length === 0 && <div className="empty-table">{t('loadingLibrary')}</div>}
         {!busy && !error && filtered.length === 0 && <div className="empty-table">{games.length ? t('noSearchMatches') : t('noAuroraGames')}</div>}
-        {filtered.map(game => <article className="library-game" key={game.contentId}><div className="library-game-title"><LibraryCover xboxIp={xboxIp} root={root} game={game} /><div><strong>{game.name}{game.isFavorite ? ' ★' : ''}</strong><small>{[game.publisher, game.releaseDate, game.discsInSet > 1 ? `Disc ${game.discNum}/${game.discsInSet}` : ''].filter(Boolean).join(' · ')}</small></div></div><code>{game.titleId}</code><span>{game.sourceDrive || '—'}</span><div className="move-controls"><select aria-label={t('move')} value={targetByGame[game.contentId] || ''} disabled={!game.sourceDrive} onChange={event => setTargetByGame(current => ({ ...current, [game.contentId]: event.target.value }))}><option value="">{game.sourceDrive ? t('chooseDrive') : t('driveUnknown')}</option>{drives.filter(drive => drive.replace(/:$/, '') !== game.sourceDrive).map(drive => <option key={drive} value={drive}>{drive.replace(/:$/, '')}</option>)}</select><button className="button secondary" disabled={!targetByGame[game.contentId] || moving === game.contentId} onClick={() => void move(game)}>{moving === game.contentId ? '…' : t('move')}</button></div><div className="library-actions"><button className="button secondary" onClick={() => setArtworkGame(game)}>{t('artwork')}</button><button className="button secondary" onClick={() => onOpenContent(game)}>{t('content')}</button><button className="button secondary" onClick={() => onOpenSaves(game)}>{t('saves')}</button></div></article>)}
+        {filtered.map(game => <Fragment key={game.contentId}>
+          <article className="library-game"><div className="library-game-title"><LibraryCover xboxIp={xboxIp} root={root} game={game} /><div><strong>{game.name}{game.isFavorite ? ' ★' : ''}</strong><small>{[game.publisher, game.releaseDate, game.discsInSet > 1 ? `Disc ${game.discNum}/${game.discsInSet}` : ''].filter(Boolean).join(' · ')}</small></div></div><code>{game.titleId}</code><span>{game.sourceDrive || '—'}</span><div className="move-controls"><select aria-label={t('move')} value={targetByGame[game.contentId] || ''} disabled={!game.sourceDrive} onChange={event => setTargetByGame(current => ({ ...current, [game.contentId]: event.target.value }))}><option value="">{game.sourceDrive ? t('chooseDrive') : t('driveUnknown')}</option>{drives.filter(drive => drive.replace(/:$/, '') !== game.sourceDrive).map(drive => <option key={drive} value={drive}>{drive.replace(/:$/, '')}</option>)}</select><button className="button secondary" disabled={!targetByGame[game.contentId] || moving === game.contentId} onClick={() => void move(game)}>{moving === game.contentId ? '…' : t('move')}</button></div><div className="library-actions"><button className="button secondary" onClick={() => setArtworkGame(game)}>{t('artwork')}</button><button className="button secondary" aria-expanded={expandedContentId === game.contentId} onClick={() => setExpandedContentId(current => current === game.contentId ? null : game.contentId)}>{t('content')}</button><button className="button secondary" onClick={() => onOpenContent(game)}>{t('openFullPage')}</button><button className="button secondary" onClick={() => onOpenSaves(game)}>{t('saves')}</button></div></article>
+          {expandedContentId === game.contentId && <ContentManager embedded xboxIp={xboxIp} drive={game.sourceDrive || drives[0] || 'Hdd1:'} initialTitleId={game.titleId} initialGameName={game.name} />}
+        </Fragment>)}
       </section>
       {artworkGame && <ArtworkDialog xboxIp={xboxIp} root={root} game={artworkGame} onClose={() => setArtworkGame(null)} />}
     </>}
@@ -118,6 +135,7 @@ export function FtpManager({ xboxIp }: { xboxIp: string }) {
   const [serverPaths, setServerPaths] = useState('')
   const [uploadMessage, setUploadMessage] = useState('')
   const fileInput = useRef<HTMLInputElement>(null)
+  const folderInput = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [downloading, setDownloading] = useState<string | null>(null)
@@ -137,6 +155,7 @@ export function FtpManager({ xboxIp }: { xboxIp: string }) {
   }, [xboxIp])
   const loadJobs = useCallback(async () => { try { setJobs(await getFtpJobs()) } catch { /* Main panel shows API errors. */ } }, [])
   useEffect(() => { void load('/'); void loadJobs(); const id = window.setInterval(() => void loadJobs(), 2500); return () => clearInterval(id) }, [load, loadJobs])
+  useEffect(() => { folderInput.current?.setAttribute('webkitdirectory', '') }, [])
 
   async function perform(action: () => Promise<void>, reload = true) {
     setBusy(true); setError('')
@@ -169,6 +188,15 @@ export function FtpManager({ xboxIp }: { xboxIp: string }) {
     } catch (cause) { setError(errorText(cause)) }
     finally { setDownloading(null) }
   }
+  function uploadLocalFiles(input: HTMLInputElement) {
+    const files = Array.from(input.files || [])
+    if (!files.length) return
+    setBusy(true); setError(''); setUploadMessage(t('uploadingFiles', { count: files.length }))
+    void uploadBrowserFiles(xboxIp, cwdRef.current, files).then(() => {
+      setUploadMessage(t('localUploadComplete', { count: files.length }))
+      return load()
+    }).catch(cause => setError(errorText(cause))).finally(() => { setBusy(false); input.value = '' })
+  }
   const breadcrumbs = cwd.split('/').filter(Boolean)
 
   return <div className="page-content tool-page">
@@ -176,7 +204,7 @@ export function FtpManager({ xboxIp }: { xboxIp: string }) {
     {!xboxIp ? <div className="empty-state panel-message"><p>{t('xboxRequired')}</p></div> : <>
       <section className="tool-panel ftp-browser">
         <div className="tool-toolbar"><div className="breadcrumbs"><button onClick={() => void load('/')}>/</button>{breadcrumbs.map((part, index) => <button key={`${part}-${index}`} onClick={() => void load(`/${breadcrumbs.slice(0, index + 1).join('/')}`)}>/{part}</button>)}</div><button className="button secondary" disabled={busy} onClick={() => void load()}>{t('refresh')}</button></div>
-        <div className="tool-actions"><label className="compact-field"><span>{t('folderName')}</span><input value={folderName} onChange={event => setFolderName(event.target.value)} /></label><button className="button secondary" disabled={!folderName.trim() || busy} onClick={() => void perform(async () => { await mkdirFtp(xboxIp, joinPath(cwd, folderName.trim())); setFolderName('') })}>{t('newFolder')}</button><label className="compact-field grow"><span>{t('serverPaths')}</span><input value={serverPaths} onChange={event => setServerPaths(event.target.value)} placeholder="/srv/godsend/Transfer/game.iso" /></label><button className="button secondary" disabled={!serverPaths.trim() || busy} onClick={() => void perform(async () => { await uploadFtp(xboxIp, serverPaths.split('\n').map(path => path.trim()).filter(Boolean), cwd); setServerPaths('') }, false)}>{t('upload')}</button><input ref={fileInput} className="visually-hidden" type="file" multiple onChange={event => { const files = Array.from(event.target.files || []); if (!files.length) return; setBusy(true); setError(''); setUploadMessage(t('uploadingFiles', { count: files.length })); void uploadBrowserFiles(xboxIp, cwd, files).then(() => { setUploadMessage(t('localUploadComplete', { count: files.length })); return load() }).catch(cause => setError(errorText(cause))).finally(() => { setBusy(false); event.target.value = '' }) }} /><button className="button primary" disabled={busy} onClick={() => fileInput.current?.click()}>{t('chooseLocalFiles')}</button></div>
+        <div className="tool-actions"><label className="compact-field"><span>{t('folderName')}</span><input value={folderName} onChange={event => setFolderName(event.target.value)} /></label><button className="button secondary" disabled={!folderName.trim() || busy} onClick={() => void perform(async () => { await mkdirFtp(xboxIp, joinPath(cwd, folderName.trim())); setFolderName('') })}>{t('newFolder')}</button><label className="compact-field grow"><span>{t('serverPaths')}</span><input value={serverPaths} onChange={event => setServerPaths(event.target.value)} placeholder="/srv/godsend/Transfer/game.iso" /></label><button className="button secondary" disabled={!serverPaths.trim() || busy} onClick={() => void perform(async () => { await uploadFtp(xboxIp, serverPaths.split('\n').map(path => path.trim()).filter(Boolean), cwd); setServerPaths('') }, false)}>{t('upload')}</button><input ref={fileInput} className="visually-hidden" type="file" multiple onChange={event => { const files = Array.from(event.target.files || []); if (!files.length) return; setBusy(true); setError(''); setUploadMessage(t('uploadingFiles', { count: files.length })); void uploadBrowserFiles(xboxIp, cwd, files).then(() => { setUploadMessage(t('localUploadComplete', { count: files.length })); return load() }).catch(cause => setError(errorText(cause))).finally(() => { setBusy(false); event.target.value = '' }) }} /><input ref={folderInput} className="visually-hidden" type="file" multiple onChange={event => uploadLocalFiles(event.currentTarget)} /><button className="button secondary" disabled={busy} onClick={() => folderInput.current?.click()}>{t('chooseLocalFolder')}</button><button className="button primary" disabled={busy} onClick={() => fileInput.current?.click()}>{t('chooseLocalFiles')}</button></div>
         <p className="tool-hint">{t('serverPathsHint')}</p>
         {uploadMessage && <p className="connection-message success">{uploadMessage}</p>}
         {error && <p className="inline-error">{error}</p>}
@@ -198,18 +226,28 @@ function ContentRows({ items, title, drives, busy, onQueue, onToggle, onDelete, 
   })}</section>
 }
 
-export function ContentManager({ xboxIp, drive, initialTitleId = '', initialGameName = '' }: { xboxIp: string; drive: string; initialTitleId?: string; initialGameName?: string }) {
+export function ContentManager({ xboxIp, drive, initialTitleId = '', initialGameName = '', embedded = false }: { xboxIp: string; drive: string; initialTitleId?: string; initialGameName?: string; embedded?: boolean }) {
   const { t } = useI18n(); const [titleId, setTitleId] = useState(initialTitleId); const [gameName, setGameName] = useState(initialGameName)
   const [manifest, setManifest] = useState<ContentManifest | null>(null); const [tus, setTus] = useState<ContentItem[]>([]); const [drives, setDrives] = useState<string[]>([]); const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [busy, setBusy] = useState(false)
   const [selectedDrive, setSelectedDrive] = useState(drive)
   useEffect(() => { if (xboxIp) void getDrives(xboxIp).then(setDrives).catch(() => setDrives([])) }, [xboxIp])
   useEffect(() => { setSelectedDrive(drive) }, [drive])
+  useEffect(() => { if (embedded && initialTitleId) void load() }, [embedded, initialTitleId, xboxIp])
   async function load() { if (!titleId.trim()) return; setBusy(true); setError(''); try { const [content, updates] = await Promise.all([getContent(titleId.trim(), gameName.trim(), xboxIp, selectedDrive), getTitleUpdates(titleId.trim())]); setManifest(content); const installed = content.title_updates || []; const seen = new Set(installed.map(item => `${item.file_name}:${item.source}`)); setTus([...installed, ...updates.filter(item => !seen.has(`${item.file_name}:${item.source}`))]) } catch (cause) { setError(errorText(cause)) } finally { setBusy(false) } }
   async function queue(item: ContentItem) { setBusy(true); setError(''); try { await queueContent(item, gameName.trim(), xboxIp, selectedDrive) } catch (cause) { setError(errorText(cause)) } finally { setBusy(false) } }
   async function toggle(item: ContentItem) { setBusy(true); setError(''); try { await setTitleUpdateActive(item, xboxIp, item.drive || selectedDrive, !item.active); await load() } catch (cause) { setError(errorText(cause)) } finally { setBusy(false) } }
   async function deleteItem(item: ContentItem) { if (!window.confirm(t('confirmDeleteContent', { name: item.display_name }))) return; setBusy(true); setError(''); setNotice(''); try { await deleteInstalledContent(item, xboxIp, selectedDrive); setNotice(t('contentDeleted', { name: item.display_name })); await load() } catch (cause) { setError(errorText(cause)) } finally { setBusy(false) } }
   async function moveItem(item: ContentItem, target: string) { setBusy(true); setError(''); setNotice(''); try { await moveInstalledContent(item, xboxIp, selectedDrive, target); setNotice(t('contentMoved', { name: item.display_name, drive: target })); await load() } catch (cause) { setError(errorText(cause)) } finally { setBusy(false) } }
-  return <div className="page-content tool-page"><div className="page-intro"><span className="eyebrow">XBOX / CONTENT</span><h1>{t('contentTitle')}</h1><p>{t('contentDescription')}</p></div>{!xboxIp ? <div className="empty-state panel-message"><p>{t('xboxRequired')}</p></div> : <><section className="tool-panel query-panel"><div className="settings-form"><label className="field"><span>{t('gameName')}</span><input value={gameName} onChange={event => setGameName(event.target.value)} /></label><label className="field"><span>{t('titleId')}</span><input value={titleId} onChange={event => setTitleId(event.target.value.toUpperCase())} placeholder="4D5307E6" /></label><label className="field"><span>{t('drive')}</span><select value={selectedDrive} onChange={event => { setSelectedDrive(event.target.value); setManifest(null); setTus([]) }}>{[...new Set([selectedDrive, ...drives])].map(item => <option key={item} value={item}>{item}</option>)}</select></label><button className="button primary" disabled={!titleId.trim() || busy} onClick={() => void load()}>{t('loadContent')}</button></div>{error && <p className="inline-error">{error}</p>}{notice && <p className="connection-message success">{notice}</p>}</section>{manifest && <div className="stacked-panels"><ContentRows title={t('availableDlc')} items={manifest.dlcs || []} drives={drives} busy={busy} onQueue={item => void queue(item)} onDelete={item => void deleteItem(item)} onMove={(item, target) => void moveItem(item, target)} /><ContentRows title={t('titleUpdates')} items={tus} drives={drives} busy={busy} onQueue={item => void queue(item)} onToggle={item => void toggle(item)} onDelete={item => void deleteItem(item)} onMove={(item, target) => void moveItem(item, target)} /></div>}</>}</div>
+  return <div className={embedded ? 'inline-content' : 'page-content tool-page'}>
+    {!embedded && <div className="page-intro"><span className="eyebrow">XBOX / CONTENT</span><h1>{t('contentTitle')}</h1><p>{t('contentDescription')}</p></div>}
+    {!xboxIp ? <div className="empty-state panel-message"><p>{t('xboxRequired')}</p></div> : <>
+      {embedded && <div className="inline-content-head"><div><span className="eyebrow">{t('content')}</span><strong>{gameName || titleId}</strong></div><button className="button secondary" disabled={busy} onClick={() => void load()}>{busy ? '…' : t('refresh')}</button></div>}
+      {!embedded && <section className="tool-panel query-panel"><div className="settings-form"><label className="field"><span>{t('gameName')}</span><input value={gameName} onChange={event => setGameName(event.target.value)} /></label><label className="field"><span>{t('titleId')}</span><input value={titleId} onChange={event => setTitleId(event.target.value.toUpperCase())} placeholder="4D5307E6" /></label><label className="field"><span>{t('drive')}</span><select value={selectedDrive} onChange={event => { setSelectedDrive(event.target.value); setManifest(null); setTus([]) }}>{[...new Set([selectedDrive, ...drives])].map(item => <option key={item} value={item}>{item}</option>)}</select></label><button className="button primary" disabled={!titleId.trim() || busy} onClick={() => void load()}>{t('loadContent')}</button></div>{error && <p className="inline-error">{error}</p>}{notice && <p className="connection-message success">{notice}</p>}</section>}
+      {embedded && error && <p className="inline-error">{error}</p>}{embedded && notice && <p className="connection-message success">{notice}</p>}
+      {busy && !manifest && <div className="empty-table">{t('loadingContent')}</div>}
+      {manifest && <div className={embedded ? 'inline-content-panels' : 'stacked-panels'}><ContentRows title={t('availableDlc')} items={manifest.dlcs || []} drives={drives} busy={busy} onQueue={item => void queue(item)} onDelete={item => void deleteItem(item)} onMove={(item, target) => void moveItem(item, target)} /><ContentRows title={t('titleUpdates')} items={tus} drives={drives} busy={busy} onQueue={item => void queue(item)} onToggle={item => void toggle(item)} onDelete={item => void deleteItem(item)} onMove={(item, target) => void moveItem(item, target)} /></div>}
+    </>}
+  </div>
 }
 
 export function SaveManager({ xboxIp, drive, initialTitleId = '' }: { xboxIp: string; drive: string; initialTitleId?: string }) {
@@ -220,7 +258,8 @@ export function SaveManager({ xboxIp, drive, initialTitleId = '' }: { xboxIp: st
   return <div className="page-content tool-page"><div className="page-intro"><span className="eyebrow">XBOX / SAVES</span><h1>{t('savesTitle')}</h1><p>{t('savesDescription')}</p></div>{!xboxIp ? <div className="empty-state panel-message"><p>{t('xboxRequired')}</p></div> : <><section className="tool-panel query-panel"><div className="settings-form"><label className="field"><span>{t('titleId')}</span><input value={titleId} onChange={event => setTitleId(event.target.value.toUpperCase())} placeholder="4D5307E6" /></label><button className="button primary" disabled={busy} onClick={() => void discover()}>{t('discoverProfiles')}</button><button className="button secondary" disabled={busy} onClick={() => void action(() => backupAllSaves(xboxIp, drive))}>{t('backUpAll')}</button></div>{error && <p className="inline-error">{error}</p>}</section><div className="two-panel"><section className="tool-panel"><div className="section-heading"><div><span className="eyebrow">XBOX</span><h2>{t('profile')}</h2></div></div>{profiles.map(item => <button className={profile?.profile_id === item.profile_id ? 'profile-row selected' : 'profile-row'} key={item.profile_id} onClick={() => void select(item)}><strong>{item.profile_name || item.profile_id}</strong><small>{item.profile_id}{item.save_count !== undefined ? ` · ${item.save_count}` : ''}</small></button>)}</section><section className="tool-panel"><div className="section-heading"><div><span className="eyebrow">XBOX</span><h2>{t('saveFiles')}</h2></div>{profile && <button className="button secondary" disabled={busy} onClick={() => void action(() => downloadSave(xboxIp, drive, titleId, profile.profile_id, ''))}>{t('backUp')}</button>}</div>{!profile ? <div className="empty-table">{t('selectProfile')}</div> : entries.map(entry => <div className="save-row" key={entry.name}><strong>{entry.name}</strong><span>{bytes(entry.size)}</span></div>)}{profile && <div className="save-copy-controls"><label className="field"><span>{t('copyToProfile')}</span><select value={targetProfile} onChange={event => setTargetProfile(event.target.value)}><option value="">{t('chooseProfile')}</option>{profiles.filter(item => item.profile_id !== profile.profile_id).map(item => <option key={item.profile_id} value={item.profile_id}>{item.profile_name || item.profile_id}</option>)}</select></label><label className="check-field"><input type="checkbox" checked={useKeyVault} onChange={event => setUseKeyVault(event.target.checked)} />{t('useKeyVault')}</label><button className="button secondary" disabled={busy || !targetProfile || !entries.length} onClick={() => void action(() => copySave(xboxIp, drive, titleId, profile.profile_id, targetProfile, useKeyVault))}>{t('copy')}</button></div>}{profile && <button className="text-button destructive" disabled={busy} onClick={() => { if (window.confirm(t('delete'))) void action(() => deleteSave(xboxIp, drive, titleId, profile.profile_id).then(discover)) }}>{t('delete')}</button>}</section></div></>}</div>
 }
 
-export function IsoTools({ xboxIp, defaultDrive }: { xboxIp: string; defaultDrive: string }) {
+export function IsoTools({ xboxIp, serverConfig }: { xboxIp: string; serverConfig: ServerConfig }) {
+  const defaultDrive = serverConfig.default_drive || 'Hdd1:'
   const { t } = useI18n(); const [isoPath, setIsoPath] = useState(''); const [outDir, setOutDir] = useState(''); const [info, setInfo] = useState<IsoInfo | null>(null); const [result, setResult] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const [progress, setProgress] = useState<number | null>(null)
   const [sendAfterConversion, setSendAfterConversion] = useState(false)
   const [xboxDestination, setXboxDestination] = useState('')
@@ -231,7 +270,10 @@ export function IsoTools({ xboxIp, defaultDrive }: { xboxIp: string; defaultDriv
       const data = await convertIso(format, isoPath.trim(), outDir.trim())
       setResult(t('conversionComplete', { path: data.outputDir }))
       if (sendAfterConversion) {
-        await uploadFtp(xboxIp, [data.outputDir], xboxDestination.trim())
+        const configuredPath = format === 'god' ? serverConfig.custom_god_path || 'GOD' : serverConfig.custom_xex_path || 'Games'
+        const automaticDestination = `/${defaultDrive.replace(/:$/, '')}/${configuredPath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')}`
+        const destination = xboxDestination.trim() || automaticDestination
+        await uploadFtp(xboxIp, [data.outputDir], destination)
         setResult(t('conversionAndTransferQueued', { path: data.outputDir }))
       }
     } catch (cause) { setError(errorText(cause)) } finally { setBusy(false) }
@@ -249,6 +291,6 @@ export function IsoTools({ xboxIp, defaultDrive }: { xboxIp: string; defaultDriv
     } catch (cause) { setError(errorText(cause)) }
     finally { setBusy(false); setProgress(null) }
   }
-  const canConvert = Boolean(isoPath.trim() && outDir.trim() && !busy && (!sendAfterConversion || (xboxIp && validXboxDestination(xboxDestination.trim()))))
+  const canConvert = Boolean(isoPath.trim() && outDir.trim() && !busy && (!sendAfterConversion || (xboxIp && (!xboxDestination.trim() || validXboxDestination(xboxDestination.trim())))))
   return <div className="page-content tool-page"><div className="page-intro"><span className="eyebrow">SERVER / ISO</span><h1>{t('isoToolsTitle')}</h1><p>{t('isoToolsDescription')}</p></div><section className="tool-panel"><div className="iso-picker"><label className="button secondary"><input className="visually-hidden" type="file" accept=".iso" disabled={busy} onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void selectLocalIso(file) }} />{t('chooseIsoFiles')}</label>{progress !== null && <><progress value={progress} max={1} aria-label={t('uploadingIso', { percent: Math.round(progress * 100) })} /><span>{t('uploadingIso', { percent: Math.round(progress * 100) })}</span></>}</div><div className="settings-form iso-form"><label className="field"><span>{t('isoPath')}</span><input value={isoPath} onChange={event => setIsoPath(event.target.value)} placeholder="/srv/godsend/Transfer/game.iso" /></label><label className="field"><span>{t('outputDirectory')}</span><input value={outDir} onChange={event => setOutDir(event.target.value)} placeholder="/srv/godsend/Ready" /></label><label className="check-field iso-auto-ftp"><input type="checkbox" checked={sendAfterConversion} disabled={!xboxIp || busy} onChange={event => setSendAfterConversion(event.target.checked)} />{t('sendAfterConversion')}</label>{sendAfterConversion && <label className="field iso-ftp-destination"><span>{t('xboxTransferFolder')}</span><input value={xboxDestination} disabled={busy} onChange={event => setXboxDestination(event.target.value)} placeholder={`/${defaultDrive.replace(/:$/, '')}/Games`} /><small>{t('xboxTransferFolderHint')}</small></label>}<button className="button secondary" disabled={!isoPath.trim() || busy} onClick={() => void probe()}>{t('probe')}</button><button className="button primary" disabled={!canConvert} onClick={() => void convert('god')}>{t('convertToGod')}</button><button className="button primary" disabled={!canConvert} onClick={() => void convert('xex')}>{t('extractToXex')}</button></div>{error && <p className="inline-error">{error}</p>}{result && <p className="connection-message success">{result}</p>}{info && <div className="disc-info"><span className="eyebrow">{t('discInfo')}</span><strong>{info.displayName}</strong><span>{t('titleId')}: {info.titleId} · Media ID: {info.mediaId}</span><small>{t('disc', { number: info.discNumber, count: info.discCount })}{info.isOriginalXbox ? ' · Original Xbox' : ''}</small></div>}</section></div>
 }
