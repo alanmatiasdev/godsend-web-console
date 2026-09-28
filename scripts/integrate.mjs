@@ -24,7 +24,10 @@ try {
   const source = await readFile(router, 'utf8')
   const middlewareSource = await readFile(middleware, 'utf8')
   const marker = '\tregisterWebUI(mux)\n'
-  const uploadRoute = '\tmux.HandleFunc("/webui/upload-file", d.wrap(d.handleWebUIUpload))\n'
+  const routes = [
+    '\tmux.HandleFunc("/webui/upload-file", d.wrap(d.handleWebUIUpload))\n',
+    '\tmux.HandleFunc("/webui/artwork/search", d.wrap(d.handleWebUIArtworkSearch))\n',
+  ]
   const anchor = '\treturn mux\n'
   const corsMarker = '\t\twebCORS(w, r)\n'
   const corsAnchor = '\treturn func(w stdhttp.ResponseWriter, r *stdhttp.Request) {\n'
@@ -40,11 +43,14 @@ try {
   await cp(dist, assets, { recursive: true })
   await cp(path.join(project, 'integration/serve_webui.go'), path.join(handlers, 'serve_webui.go'))
   await cp(path.join(project, 'integration/serve_webui_test.go'), path.join(handlers, 'serve_webui_test.go'))
-  await cp(path.join(project, 'integration/webui_upload.go'), path.join(handlers, 'webui_upload.go'))
+  for (const file of ['webui_upload.go', 'webui_artwork.go', 'webui_artwork_test.go']) {
+    await cp(path.join(project, 'integration', file), path.join(handlers, file))
+  }
   let updatedRouter = source
-  if (!updatedRouter.includes(uploadRoute)) {
+  for (const route of routes) {
+    if (updatedRouter.includes(route)) continue
     const insertionPoint = updatedRouter.includes(marker) ? marker : anchor
-    updatedRouter = updatedRouter.replace(insertionPoint, `${uploadRoute}${insertionPoint}`)
+    updatedRouter = updatedRouter.replace(insertionPoint, `${route}${insertionPoint}`)
   }
   if (!updatedRouter.includes(marker)) updatedRouter = updatedRouter.replace(anchor, `${marker}${anchor}`)
   if (updatedRouter !== source) await writeFile(router, updatedRouter)

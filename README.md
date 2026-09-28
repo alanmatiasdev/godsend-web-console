@@ -9,12 +9,12 @@ The official desktop renderer is already written in React, but most screens call
 | Area | Web v1 | Electron features still missing from the web UI |
 | --- | --- | --- |
 | Browse and install | Browse and search local Transfer ISOs, Minerva, and Internet Archive across the listed Xbox platforms; choose drive and GOD/Content/XEX where applicable; register and trigger a job. | Cover art retrieval, ROM catalog browsing, source-specific guidance, and the richer disc/install details in the desktop browser. |
-| Xbox Library | Read Aurora `content.db` and `settings.db` over FTP in the browser; filter installed games, view title metadata/favorites/play counts, refresh the library, and enqueue moves between drives. The selected Aurora root is saved in this browser. | Artwork search/sync, decoded cover previews, and the richer per-title DLC/TU and asset editor panels. |
+| Xbox Library | Read Aurora `content.db` and `settings.db` over FTP in the browser; filter installed games, view title metadata/favorites/play counts, refresh the library, enqueue moves between drives, and manage artwork (see the Aurora artwork row). The selected Aurora root is saved in this browser. | Automatic artwork sync and the richer per-title DLC/TU panels. |
 | DLC and Title Updates | Discover DLC and title updates by Title ID, queue installs, and activate/deactivate installed title updates. | Delete content and move installed content. |
 | Save games | Discover profiles, inspect per-title save files, back up a profile or every profile, copy a title save between profiles with optional KeyVault re-signing, and delete a profile's title save. | Restore backups from the GODsend host onto the Xbox. |
 | FTP Manager | Browse folders, create/delete folders and files, select multiple entries, move/copy them, upload files selected in the browser or paths on the GODsend host, and track FTP jobs. | Download files from the Xbox to the browser device. |
 | ISO tools | Probe, convert ISO to GOD, and extract ISO to XEX using paths on the GODsend host. | Browser-local file picking and optional automatic FTP transfer. |
-| Aurora artwork | — | Search, preview, decode/encode, and upload cover, background, banner, icon, and screenshot assets; automatic artwork sync after transfers. |
+| Aurora artwork | From **Xbox Library → Artwork**: preview the cover, background, banner, icon, and screenshots installed on the console; search XboxUnity and the Xbox catalog by Title ID or name, or pick a PNG/JPEG from the browser device; upload the result as an Aurora `.asset` (icon/banner and screenshots share a file, so the other slots are kept). | Automatic artwork sync after transfers; BMP/GIF input; bulk cover download. |
 | Job queue | Unified game pipeline and FTP jobs with state, FTP progress, refresh, and removal of completed jobs. |
 | Xbox setup | Store the Xbox IP in this browser and test FTP connectivity. | Upload and patch Aurora scripts, choose FTP script path, edit FTP credentials, and scan/test connection settings. |
 | Server settings | Read the default destination drive from `/config`. | Configure Internet Archive login, Debrid providers, storage/Transfer/backup/temp paths, default drive, custom GOD/XEX and ROM paths, aria2 ports, cache refresh, and local data cleanup. |
@@ -53,7 +53,7 @@ npm run build
 npm run integrate -- /path/to/GODSend-360
 ```
 
-The integration script copies `dist/` to `src/server/interfaces/http/webui/`, adds the Go `embed.FS` handler and its test, adds `/webui/upload-file` for browser-selected uploads to Xbox FTP, and registers `/ui/` in the router. It is idempotent but modifies the upstream checkout. This was validated against upstream v2.13.3 (commit `ff70dadc7c86c8a52dbd366595ae93419d4b55f4`). Build the backend from the upstream root; for Linux x64:
+The integration script copies `dist/` to `src/server/interfaces/http/webui/`, adds the Go `embed.FS` handler and its test, adds `/webui/upload-file` for browser-selected uploads to Xbox FTP and `/webui/artwork/search` (a server-side proxy for the artwork sources, which are plain HTTP without CORS and cannot be called from a browser; it only connects to public addresses), and registers `/ui/` in the router. It is idempotent but modifies the upstream checkout. This was validated against upstream v2.13.3 (commit `ff70dadc7c86c8a52dbd366595ae93419d4b55f4`). Build the backend from the upstream root; for Linux x64:
 
 ```sh
 npm run build:server:linux:x64

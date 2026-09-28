@@ -7,6 +7,7 @@ import {
   type AuroraGame,
   type ContentItem, type ContentManifest, type FtpEntry, type FtpJob, type IsoInfo, type SaveEntry, type SaveProfile,
 } from './api'
+import { ArtworkDialog } from './artwork'
 import { useI18n } from './i18n'
 
 function errorText(error: unknown): string { return error instanceof Error ? error.message : 'Unknown error' }
@@ -30,6 +31,7 @@ export function XboxLibrary({ xboxIp }: { xboxIp: string }) {
   const [notice, setNotice] = useState('')
   const [targetByGame, setTargetByGame] = useState<Record<number, string>>({})
   const [moving, setMoving] = useState<number | null>(null)
+  const [artworkGame, setArtworkGame] = useState<AuroraGame | null>(null)
 
   const load = useCallback(async (requestedRoot = rootInput) => {
     if (!xboxIp) return
@@ -60,11 +62,12 @@ export function XboxLibrary({ xboxIp }: { xboxIp: string }) {
     {!xboxIp ? <div className="empty-state panel-message"><p>{t('xboxRequired')}</p></div> : <>
       <section className="tool-panel library-controls"><label className="compact-field grow"><span>{t('auroraRoot')}</span><input value={rootInput} onChange={event => setRootInput(event.target.value)} placeholder="/Hdd1/Aurora" /></label><button className="button primary" disabled={busy} onClick={() => void load()}>{busy ? t('loadingLibrary') : t('refreshLibrary')}</button><label className="search-field library-search"><span aria-hidden="true">⌕</span><input value={search} onChange={event => setSearch(event.target.value)} placeholder={t('searchGames')} aria-label={t('searchGames')} /></label><span className="result-count">{t('manyTitles', { count: filtered.length })}</span></section>
       {error && <p className="inline-error">{error}</p>}{notice && <p className="connection-message success">{notice}</p>}
-      <section className="tool-panel library-list"><div className="library-list-head"><span>{t('game')}</span><span>{t('titleId')}</span><span>{t('drive')}</span><span>{t('move')}</span></div>
+      <section className="tool-panel library-list"><div className="library-list-head"><span>{t('game')}</span><span>{t('titleId')}</span><span>{t('drive')}</span><span>{t('move')}</span><span>{t('artwork')}</span></div>
         {busy && games.length === 0 && <div className="empty-table">{t('loadingLibrary')}</div>}
         {!busy && !error && filtered.length === 0 && <div className="empty-table">{games.length ? t('noSearchMatches') : t('noAuroraGames')}</div>}
-        {filtered.map(game => <article className="library-game" key={game.contentId}><div className="library-game-title"><span className="game-cover-placeholder">{game.name.slice(0, 1).toUpperCase()}</span><div><strong>{game.name}{game.isFavorite ? ' ★' : ''}</strong><small>{[game.publisher, game.releaseDate, game.discsInSet > 1 ? `Disc ${game.discNum}/${game.discsInSet}` : ''].filter(Boolean).join(' · ')}</small></div></div><code>{game.titleId}</code><span>{game.sourceDrive || '—'}</span><div className="move-controls"><select aria-label={t('move')} value={targetByGame[game.contentId] || ''} disabled={!game.sourceDrive} onChange={event => setTargetByGame(current => ({ ...current, [game.contentId]: event.target.value }))}><option value="">{game.sourceDrive ? t('chooseDrive') : t('driveUnknown')}</option>{drives.filter(drive => drive.replace(/:$/, '') !== game.sourceDrive).map(drive => <option key={drive} value={drive}>{drive.replace(/:$/, '')}</option>)}</select><button className="button secondary" disabled={!targetByGame[game.contentId] || moving === game.contentId} onClick={() => void move(game)}>{moving === game.contentId ? '…' : t('move')}</button></div></article>)}
+        {filtered.map(game => <article className="library-game" key={game.contentId}><div className="library-game-title"><span className="game-cover-placeholder">{game.name.slice(0, 1).toUpperCase()}</span><div><strong>{game.name}{game.isFavorite ? ' ★' : ''}</strong><small>{[game.publisher, game.releaseDate, game.discsInSet > 1 ? `Disc ${game.discNum}/${game.discsInSet}` : ''].filter(Boolean).join(' · ')}</small></div></div><code>{game.titleId}</code><span>{game.sourceDrive || '—'}</span><div className="move-controls"><select aria-label={t('move')} value={targetByGame[game.contentId] || ''} disabled={!game.sourceDrive} onChange={event => setTargetByGame(current => ({ ...current, [game.contentId]: event.target.value }))}><option value="">{game.sourceDrive ? t('chooseDrive') : t('driveUnknown')}</option>{drives.filter(drive => drive.replace(/:$/, '') !== game.sourceDrive).map(drive => <option key={drive} value={drive}>{drive.replace(/:$/, '')}</option>)}</select><button className="button secondary" disabled={!targetByGame[game.contentId] || moving === game.contentId} onClick={() => void move(game)}>{moving === game.contentId ? '…' : t('move')}</button></div><button className="button secondary artwork-open" onClick={() => setArtworkGame(game)}>{t('artwork')}</button></article>)}
       </section>
+      {artworkGame && <ArtworkDialog xboxIp={xboxIp} root={root} game={artworkGame} onClose={() => setArtworkGame(null)} />}
     </>}
   </div>
 }

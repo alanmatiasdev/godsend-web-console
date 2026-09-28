@@ -230,6 +230,10 @@ const artworkSlots: Record<string, { slot: number; prefix: string; group?: 'GL' 
   screenshot9: { slot: 13, prefix: 'SS', group: 'SS' },
   screenshot10: { slot: 14, prefix: 'SS', group: 'SS' },
 }
+export const artworkTypes = Object.keys(artworkSlots)
+const artworkTypeBySlot = new Map(Object.entries(artworkSlots).map(([type, info]) => [info.slot, type]))
+
+export type ArtworkResult = { titleId: string; assetType: string; source: string; official: boolean; rating: number | null; image: string }
 
 function binaryToBase64(bytes: Uint8Array): string {
   let binary = ''
@@ -237,59 +241,67 @@ function binaryToBase64(bytes: Uint8Array): string {
   return btoa(binary)
 }
 
-function imageDataUrl(value: unknown): string | null {
-  if (typeof value !== 'string' || !value) return null
-  return `data:image/png;base64,${value}`
+function auroraGameDataPath(root: string, game: AuroraGame): string {
+  return `${root.replace(/\\/g, '/').replace(/\/+$/, '')}/Data/GameData/${game.gameDataDir}`
 }
 
-async function readAuroraAsset(ip: string, root: string, game: AuroraGame, type: string): Promise<string | null> {
-  const info = artworkSlots[type]
-  if (!info) throw new Error('Unknown Aurora artwork type.')
-  const dir = `${root.replace(/\\/g, '/').replace(/\/+$/, '')}/Data/GameData/${game.gameDataDir}`
-  const assetName = `${info.prefix}${game.titleId}.asset`
-  const result = (await ftpBatch(ip, [{ op: 'download_base64', path: `${dir}/${assetName}` }], 120000))[0]
-  if (!result?.ok || typeof result.data !== 'string') return null
-  const assetBytes = fromBase64(result.data)
-  const decoded = await request('/rxea/decode', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: assetBytes.slice().buffer as ArrayBuffer }, apiBaseUrl, 120000)
-  const data = await decoded.json() as { slots?: Array<{ slot: number; png: string }> }
-  const slot = data.slots?.find(item => item.slot === info.slot)
-  return imageDataUrl(slot?.png)
+async function decodeAuroraAsset(assetBytes: Uint8Array): Promise<Array<{ slot: number; png: string }>> {
+  const response = await request('/rxea/decode', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: assetBytes.slice().buffer as ArrayBuffer }, apiBaseUrl, 120000)
+  const data = await response.json() as { slots?: Array<{ slot: number; png: string }> }
+  return Array.isArray(data.slots) ? data.slots : []
 }
 
-export async function getAuroraArtwork(ip: string, root: string, game: AuroraGame, type: string): Promise<string | null> {
-  return readAuroraAsset(ip, root, game, type)
+// Reads every artwork type Aurora stores for the game with one FTP batch. Missing or unreadable files are skipped.
+export async function getAuroraArtworkSet(ip: string, root: string, game: AuroraGame): Promise<Record<string, string>> {
+  const dir = auroraGameDataPath(root, game)
+  const results = await ftpBatch(ip, ['BK', 'GC', 'GL', 'SS'].map(prefix => ({ op: 'download_base64', path: `${dir}/${prefix}${game.titleId}.asset` })), 120000)
+  const found: Record<string, string> = {}
+  await Promise.all(results.map(async result => {
+    if (!result?.ok || typeof result.data !== 'string') return
+    const assetBytes = fromBase64(result.data)
+    if (assetBytes.length < 2048) return
+    try {
+      for (const slot of await decodeAuroraAsset(assetBytes)) {
+        const type = artworkTypeBySlot.get(slot.slot)
+        if (type && slot.png) found[type] = `data:image/png;base64,${slot.png}`
+      }
+    } catch { /* One undecodable asset should not hide the others. */ }
+  }))
+  return found
 }
 
-export async function uploadAuroraArtwork(ip: string, root: string, game: AuroraGame, type: string, file: File): Promise<void> {
+export async function searchArtwork(type: string, titleId: string, queryText: string): Promise<ArtworkResult[]> {
+  const path = query('/webui/artwork/search', { type, title_id: titleId, query: queryText })
+  const data = await (await request(path, undefined, apiBaseUrl, 60000)).json() as { results?: ArtworkResult[] }
+  return Array.isArray(data.results) ? data.results : []
+}
+
+export async function uploadAuroraArtwork(ip: string, root: string, game: AuroraGame, type: string, image: Blob): Promise<void> {
   const info = artworkSlots[type]
   if (!info) throw new Error('Unknown Aurora artwork type.')
   if (!game.gameDataDir || !/^[0-9A-F]{8}$/i.test(game.titleId)) throw new Error('Aurora game database information is incomplete.')
-  if (file.size > 16 * 1024 * 1024) throw new Error('Choose an image smaller than 16 MB.')
-  const image = new Uint8Array(await file.arrayBuffer())
+  if (image.size > 16 * 1024 * 1024) throw new Error('Choose an image smaller than 16 MB.')
+  const imageBytes = new Uint8Array(await image.arrayBuffer())
+  const dir = auroraGameDataPath(root, game)
+  const assetPath = `${dir}/${info.prefix}${game.titleId}.asset`
   let encodedAsset: Uint8Array
   if (info.group) {
-    const dir = `${root.replace(/\\/g, '/').replace(/\/+$/, '')}/Data/GameData/${game.gameDataDir}`
-    const assetPath = `${dir}/${info.prefix}${game.titleId}.asset`
+    // Icon and banner share one file, as do the screenshots, so keep the slots that are not being replaced.
     const result = (await ftpBatch(ip, [{ op: 'download_base64', path: assetPath }], 120000))[0]
     const slots: Array<{ slot: number; png: string }> = []
     if (result?.ok && typeof result.data === 'string') {
-      const priorBytes = fromBase64(result.data)
-      const prior = await request('/rxea/decode', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: priorBytes.slice().buffer as ArrayBuffer }, apiBaseUrl, 120000)
-      const decoded = await prior.json() as { slots?: Array<{ slot: number; png: string }> }
-      for (const slot of decoded.slots || []) if (slot.slot !== info.slot) slots.push({ slot: slot.slot, png: slot.png })
+      for (const slot of await decodeAuroraAsset(fromBase64(result.data))) if (slot.slot !== info.slot) slots.push({ slot: slot.slot, png: slot.png })
     }
-    slots.push({ slot: info.slot, png: binaryToBase64(image) })
+    slots.push({ slot: info.slot, png: binaryToBase64(imageBytes) })
     const encoded = await request('/rxea/encode-multi', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ slots }) }, apiBaseUrl, 120000)
     encodedAsset = new Uint8Array(await encoded.arrayBuffer())
   } else {
-    const encoded = await request(`/rxea/encode?slot=${info.slot}`, { method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: image.slice().buffer as ArrayBuffer }, apiBaseUrl, 120000)
+    const encoded = await request(`/rxea/encode?slot=${info.slot}`, { method: 'POST', headers: { 'Content-Type': image.type || 'application/octet-stream' }, body: imageBytes.slice().buffer as ArrayBuffer }, apiBaseUrl, 120000)
     encodedAsset = new Uint8Array(await encoded.arrayBuffer())
   }
-  const dir = `${root.replace(/\\/g, '/').replace(/\/+$/, '')}/Data/GameData/${game.gameDataDir}`
-  const assetPath = `${dir}/${info.prefix}${game.titleId}.asset`
   const results = await ftpBatch(ip, [
     { op: 'ensure_dir', path: dir },
-    { op: 'upload_base64', path: assetPath, data: binaryToBase64(encodedAsset!) },
+    { op: 'upload_base64', path: assetPath, data: binaryToBase64(encodedAsset) },
   ], 120000)
   if (!results[1]?.ok) throw new Error(results[1]?.error || 'Could not upload artwork to the Xbox.')
 }
