@@ -1,8 +1,18 @@
 # GODsend Web
 
-A lightweight React interface for the [GODsend 360](https://github.com/ghostyshell/GODSend-360) Go backend. It runs in a browser and can be embedded in the original Go binary, which serves both the UI and its HTTP API. Electron and Node.js are not needed on the device opening the page.
+> A browser-based, community-maintained interface for [GODsend 360](https://github.com/ghostyshell/GODSend-360).
 
-The official desktop renderer is already written in React, but most screens call `window.godsendApi` through Electron's [preload/IPC bridge](https://github.com/ghostyshell/GODSend-360/blob/main/src/electron-app/preload.ts). This project implements the browser-compatible parts against the [documented HTTP API](https://github.com/ghostyshell/GODSend-360/blob/main/docs/api-reference.md). It does not copy the full desktop renderer or claim feature parity. The upstream project is [MIT licensed](https://github.com/ghostyshell/GODSend-360/blob/main/LICENSE).
+GODsend Web is a lightweight React interface for the GODsend 360 Go backend. It runs in a browser and can be embedded in a GODsend binary, which serves both the UI and its HTTP API. Electron and Node.js are not needed on the device opening the page.
+
+The upstream desktop renderer is written in React, but most of its screens call `window.godsendApi` through Electron's [preload/IPC bridge](https://github.com/ghostyshell/GODSend-360/blob/main/src/electron-app/preload.ts). This project implements browser-compatible workflows against the [documented HTTP API](https://github.com/ghostyshell/GODSend-360/blob/main/docs/api-reference.md). It is an independent web interface: it does not copy the desktop renderer or claim full feature parity.
+
+## What this project provides
+
+- A responsive web console for catalog browsing, Xbox library management, saves, DLC/title updates, FTP files, ISO tools, artwork, jobs, logs, and connection settings.
+- An integration script and Go handler patches for embedding the built UI into a compatible GODsend 360 checkout.
+- Release artifacts: integration kits, prebuilt server binaries, and a multi-architecture container image.
+
+The project currently targets GODsend 360 v2.13.3 at commit [`ff70dad`](https://github.com/ghostyshell/GODSend-360/commit/ff70dadc7c86c8a52dbd366595ae93419d4b55f4). Compatibility with newer upstream revisions should be tested before use or release.
 
 ## Feature status
 
@@ -37,19 +47,31 @@ English is the default. Use the **EN / PT-BR** selector in the top bar to switch
 Requires Node.js 20+.
 
 ```sh
-npm install
+npm ci
 npm run dev
 ```
 
-Open `http://localhost:5173/ui/`. Vite proxies API calls to `http://10.77.15.115:8080` by default in this repository. To use another backend:
+The development server is available at `http://localhost:5173/ui/`. It proxies API calls to the URL in `GODSEND_DEV_BACKEND`. Set that variable to a GODsend server reachable from your machine:
 
 ```sh
 GODSEND_DEV_BACKEND=http://192.168.1.10:8080 npm run dev
 ```
 
-Set the Xbox IP on the **Connection** page. Its connection status is shown in the sidebar and the address is stored only in this browser. The same page can point the web UI at another GODsend HTTP server; the selected server is tested before it replaces the default address. A transfer starts only after selecting **Add to queue** in the game dialog.
+If the variable is omitted, the repository's Vite configuration supplies its current fallback. Contributors should set `GODSEND_DEV_BACKEND` explicitly rather than relying on that fallback.
 
-## Embed in the original Go binary
+Set the Xbox IP on the **Connection** page. Its connection status is shown in the sidebar and the address is stored only in that browser. The same page can point the web UI at another GODsend HTTP server; the selected server is tested before it replaces the default address. A transfer starts only after selecting **Add to queue** in the game dialog.
+
+### Build and checks
+
+```sh
+npm ci
+npm run build
+npm run package
+```
+
+Use `npm install` only when intentionally updating dependencies and the lockfile. CI runs the build and validates the release integration kit on pull requests and pushes to `main`.
+
+## Embed in a GODsend binary
 
 ### Published packages
 
@@ -107,6 +129,20 @@ The resulting binary serves the UI at `http://<server>:8080/ui/` and redirects `
 
 The GODsend API has no authentication. Keep port 8080 on a trusted LAN, or add authentication at a reverse proxy before exposing it elsewhere.
 
+## Contributing
+
+Contributions are welcome: bug reports, compatibility testing against newer GODsend 360 versions, documentation improvements, and pull requests all help. See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup and contribution expectations, and [docs/conventional-commits.md](docs/conventional-commits.md) for the required Conventional Commit format.
+
+Use [GitHub Issues](https://github.com/alanmatiasdev/godsend-web-console/issues) for reproducible bugs and feature proposals, and [Pull Requests](https://github.com/alanmatiasdev/godsend-web-console/pulls) for contributions. Do not include Xbox IP addresses, credentials, private logs, or other sensitive information in public reports.
+
+### Security
+
+The GODsend API has no built-in authentication. Do not expose it directly to the public internet; keep it on a trusted network or put authentication in front of it with a reverse proxy. For a suspected vulnerability, do not publish exploit details in an issue—contact the repository maintainers privately through GitHub first.
+
+### License and upstream relationship
+
+GODsend Web is released under the [MIT License](LICENSE) (copyright © 2026 Alan Matias). It integrates with, but is not affiliated with, GODsend 360; consult the [upstream license](https://github.com/ghostyshell/GODSend-360/blob/main/LICENSE) and notices for third-party material before redistributing builds or derivative work.
+
 ### Aurora archive fallback
 
 The integration also adds `/webui/unity-archive/title`, `/cover`, and `/icon` (each requires `?title_id=XXXXXXXX`) and copies the standalone Lua script to `<upstream>/aurora-scripts-archive-fallback/`. The server reads the archive's `metadata.json` into a 24-hour memory cache, and fetches only the selected game's PNG files. It keeps the last good index if GitHub is temporarily unavailable. The Xbox connects only to the GODsend server.
@@ -115,10 +151,6 @@ To install, use **Server settings → Install Aurora scripts** with source `<ups
 
 The fallback needs access from the GODsend host to `raw.githubusercontent.com`; it does not need XboxUnity to be online. The archive's README reports its last scrape as June 16, 2025. The archive's original content is CC BY-NC 4.0, while XboxUnity images retain their owners' rights; this integration downloads images on demand and does not bundle them.
 
-## Releasing
+## Release process (maintainers)
 
 Release Please opens a version and changelog PR from Conventional Commits on `main`. Merging it creates a GitHub Release. The release workflow then builds the integration kit, tests the patched Go handlers, cross-compiles the binaries, attaches the archives and checksums, and publishes the multi-architecture image to GHCR. Nothing is published to npm.
-
-Enable **Settings → Actions → General → Workflow permissions → Allow GitHub Actions to create and approve pull requests** in the GitHub repository. If CI checks must run automatically on Release Please's own PRs, set a `RELEASE_PLEASE_TOKEN` repository secret with a GitHub App or PAT that can write contents and pull requests; GitHub suppresses workflows triggered by PRs created with the default `GITHUB_TOKEN`. Regular contributor PRs run CI without this secret.
-
-After the first GHCR publication, set the container package visibility to **Public** in its package settings so anyone can pull the image without a token.
