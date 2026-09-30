@@ -1,10 +1,14 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	"image/png"
 	"net/http"
 	"regexp"
 	"sort"
@@ -107,6 +111,28 @@ func bestUnityArchiveCover(data []byte) string {
 	return ""
 }
 
+// unityArchivePNG normalizes archive cover files for Aurora. Some files with a
+// .png name are JPEG-encoded, which Aurora cannot safely import under a PNG
+// filename.
+func unityArchivePNG(data []byte) ([]byte, error) {
+	switch imageMime(data) {
+	case "image/png":
+		return data, nil
+	case "image/jpeg":
+		decoded, _, err := image.Decode(bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		var encoded bytes.Buffer
+		if err := png.Encode(&encoded, decoded); err != nil {
+			return nil, err
+		}
+		return encoded.Bytes(), nil
+	default:
+		return nil, errors.New("unsupported image format")
+	}
+}
+
 // The Aurora Lua HTTP client consumes small plain-text responses and saves PNGs
 // into User/Import; it never downloads the full catalog or talks to GitHub.
 func (d *Deps) handleWebUIUnityArchive(w http.ResponseWriter, r *http.Request) {
@@ -167,7 +193,12 @@ func (d *Deps) handleWebUIUnityArchive(w http.ResponseWriter, r *http.Request) {
 		imageURL = unityArchiveRoot + "Covers/" + strings.ToUpper(title.TitleID) + "/Large/" + coverID + ".png"
 	}
 	image, err := fetchArtworkBytes(r.Context(), imageURL, artworkMaxImageBytes)
-	if err != nil || imageMime(image) != "image/png" {
+	if err != nil {
+		http.Error(w, "image unavailable", http.StatusBadGateway)
+		return
+	}
+	image, err = unityArchivePNG(image)
+	if err != nil {
 		http.Error(w, "image unavailable", http.StatusBadGateway)
 		return
 	}

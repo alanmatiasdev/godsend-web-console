@@ -1,3 +1,5 @@
--- Patched by GODsend's existing /ftp/upload-scripts endpoint.
-BRAIN_IP = "192.168.1.1"
+-- Set this to the GODsend host reachable from the Xbox. The web console fills
+-- it automatically when installing the script and no environment-specific IP
+-- address is included in the public source tree.
+BRAIN_IP = ""
 PORT = "8080"

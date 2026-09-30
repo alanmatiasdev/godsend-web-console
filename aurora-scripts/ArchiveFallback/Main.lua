@@ -51,7 +51,12 @@ function main()
         Script.ShowMessageBox("Archive Fallback", "Install this script under Aurora\\User\\Scripts\\Utility\\ArchiveFallback.", "OK")
         return
     end
-    local baseUrl = "http://" .. clean(BRAIN_IP) .. ":" .. clean(PORT)
+    local host = clean(BRAIN_IP)
+    if host == "" then
+        Script.ShowMessageBox("Archive Fallback", "Configure BRAIN_IP in state.lua, or install this script from GODsend Server settings.", "OK")
+        return
+    end
+    local baseUrl = "http://" .. host .. ":" .. clean(PORT)
     local rows = call(Sql.ExecuteFetchRows, "SELECT Id, TitleId, TitleName FROM ContentItems ORDER BY Id")
     if type(rows) ~= "table" then
         Script.ShowMessageBox("Archive Fallback", "Could not read the Aurora game database.", "OK")
