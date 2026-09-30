@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"mime/multipart"
+	"net"
+	stdhttp "net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -279,6 +282,40 @@ func TestISOUploadName(t *testing.T) {
 		if got, err := isoUploadName(input); err == nil {
 			t.Errorf("isoUploadName(%q) = %q, want an error", input, got)
 		}
+	}
+}
+
+func TestRemoteImportURLSafety(t *testing.T) {
+	if got, err := remoteImportURL("https://downloads.example/game.iso"); err != nil || got.Hostname() != "downloads.example" {
+		t.Fatalf("remoteImportURL valid URL = %v, %v", got, err)
+	}
+	for _, raw := range []string{"file:///tmp/game.iso", "ftp://downloads.example/game.iso", "https://user:pass@downloads.example/game.iso", "http://127.0.0.1/game.iso", "http://[::1]/game.iso"} {
+		if _, err := remoteImportURL(raw); err == nil {
+			t.Errorf("remoteImportURL(%q) accepted an unsafe URL", raw)
+		}
+	}
+	for _, ip := range []string{"127.0.0.1", "10.0.0.1", "192.168.1.1", "169.254.1.1", "::1", "0.0.0.0"} {
+		if publicRemoteIP(net.ParseIP(ip)) {
+			t.Errorf("publicRemoteIP(%q) = true", ip)
+		}
+	}
+	if !publicRemoteIP(net.ParseIP("1.1.1.1")) {
+		t.Error("publicRemoteIP rejected a public address")
+	}
+}
+
+func TestRemoteImportName(t *testing.T) {
+	u, _ := url.Parse("https://downloads.example/releases/latest")
+	name, err := remoteImportName(u, stdhttp.Header{"Content-Disposition": {`attachment; filename="game.7z"`}})
+	if err != nil || name != "game.7z" {
+		t.Fatalf("remoteImportName from header = %q, %v", name, err)
+	}
+	u, _ = url.Parse("https://downloads.example/Game.ISO")
+	if name, err := remoteImportName(u, stdhttp.Header{}); err != nil || name != "Game.ISO" {
+		t.Fatalf("remoteImportName from URL = %q, %v", name, err)
+	}
+	if _, err := remoteImportName(u, stdhttp.Header{"Content-Disposition": {`attachment; filename="game.zip"`}}); err == nil {
+		t.Error("remoteImportName accepted a non-ISO archive")
 	}
 }
 

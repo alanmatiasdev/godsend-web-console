@@ -495,6 +495,10 @@ export function uploadIso(file: File, onProgress: (fraction: number) => void, si
   })
 }
 
+export async function importIsoFromUrl(url: string): Promise<{ name: string; size: number }> {
+  return jsonRequest('/webui/import-iso', { url }, 'POST', 60 * 60 * 1000)
+}
+
 export async function getServerPaths(): Promise<{ transfer_dir: string; ready_dir: string }> {
   return (await request('/webui/paths')).json()
 }

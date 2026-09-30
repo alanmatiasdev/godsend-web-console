@@ -42,6 +42,7 @@ try {
     '\tmux.HandleFunc("/webui/unity-archive/cover", d.wrap(d.handleWebUIUnityArchive))\n',
     '\tmux.HandleFunc("/webui/unity-archive/icon", d.wrap(d.handleWebUIUnityArchive))\n',
     '\tmux.HandleFunc("/webui/upload-iso", d.wrap(d.handleWebUIUploadISO))\n',
+    '\tmux.HandleFunc("/webui/import-iso", d.wrap(d.handleWebUIImportISO))\n',
     '\tmux.HandleFunc("/webui/queue/state", d.wrap(d.handleWebUIQueueState))\n',
     '\tmux.HandleFunc("/webui/queue/action", d.wrap(d.handleWebUIQueueAction))\n',
   ]
@@ -61,7 +62,7 @@ try {
   await cp(path.join(project, 'integration/serve_webui.go'), path.join(handlers, 'serve_webui.go'))
   await cp(path.join(project, 'integration/serve_webui_test.go'), path.join(handlers, 'serve_webui_test.go'))
   await cp(path.join(project, 'integration/app_webui_events.go'), path.join(upstream, 'src/server/app/webui_events.go'))
-  for (const file of ['webui_upload.go', 'webui_download.go', 'webui_archive.go', 'webui_archive_test.go', 'webui_roms.go', 'webui_paths.go', 'webui_logs.go', 'webui_artwork.go', 'webui_artwork_sync.go', 'webui_thumbnail.go', 'webui_artwork_test.go', 'webui_unity_archive.go', 'webui_unity_archive_test.go', 'webui_iso_upload.go', 'webui_queue.go', 'webui_queue_test.go']) {
+  for (const file of ['webui_upload.go', 'webui_download.go', 'webui_archive.go', 'webui_archive_test.go', 'webui_roms.go', 'webui_paths.go', 'webui_logs.go', 'webui_artwork.go', 'webui_artwork_sync.go', 'webui_thumbnail.go', 'webui_artwork_test.go', 'webui_unity_archive.go', 'webui_unity_archive_test.go', 'webui_iso_upload.go', 'webui_remote_import.go', 'webui_queue.go', 'webui_queue_test.go']) {
     await cp(path.join(project, 'integration', file), path.join(handlers, file))
   }
   await cp(path.join(project, 'aurora-scripts/ArchiveFallback'), path.join(upstream, 'aurora-scripts-archive-fallback'), { recursive: true, force: true })

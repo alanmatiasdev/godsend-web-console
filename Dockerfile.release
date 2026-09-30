@@ -2,7 +2,7 @@
 FROM alpine:3.21
 ARG TARGETARCH
 LABEL org.opencontainers.image.source="https://github.com/alanmatiasdev/godsend-web-console"
-RUN apk add --no-cache ca-certificates aria2 \
+RUN apk add --no-cache ca-certificates aria2 7zip \
  && adduser -D -u 1000 godsend \
  && mkdir -p /data /saves \
  && chown godsend:godsend /data /saves

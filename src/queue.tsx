@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { HttpError, getDrives, getSchedulerState, schedulerAction, uploadIso, type InstallType, type QueueItem, type SchedulerAction, type SchedulerState } from './api'
+import { HttpError, getDrives, getSchedulerState, importIsoFromUrl, schedulerAction, uploadIso, type InstallType, type QueueItem, type SchedulerAction, type SchedulerState } from './api'
 import { useI18n, type Translate, type TranslationKey } from './i18n'
 
 const sourceKeys = { local: 'sourceLocal', minerva: 'sourceMinerva', ia: 'sourceIa', rom: 'sourceRom' } as const satisfies Record<string, TranslationKey>
@@ -163,6 +163,8 @@ export function IsoUpload({ onUploaded }: { onUploaded: () => void }) {
   const { t } = useI18n()
   const [rows, setRows] = useState<UploadRow[]>([])
   const [busy, setBusy] = useState(false)
+  const [remoteUrl, setRemoteUrl] = useState('')
+  const [remoteError, setRemoteError] = useState('')
   const controller = useRef<AbortController | null>(null)
   useEffect(() => () => controller.current?.abort(), [])
 
@@ -190,11 +192,33 @@ export function IsoUpload({ onUploaded }: { onUploaded: () => void }) {
     setBusy(false)
   }
 
+  async function importRemote() {
+    const url = remoteUrl.trim()
+    if (!url) return
+    setBusy(true); setRemoteError('')
+    try {
+      const file = await importIsoFromUrl(url)
+      setRows(current => [...current, { id: Date.now(), name: file.name, progress: 1, status: 'done' }])
+      setRemoteUrl('')
+      onUploaded()
+    } catch (cause) {
+      setRemoteError(errorText(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return <div className="upload-panel">
     <div className="upload-head">
       <label className={busy ? 'button secondary disabled' : 'button secondary'}><input className="visually-hidden" type="file" accept=".iso" multiple disabled={busy} onChange={event => { const files = [...(event.target.files ?? [])]; event.target.value = ''; if (files.length) void start(files) }} />{t('uploadIso')}: {t('chooseIsoFiles')}</label>
       {busy && <button className="text-button" onClick={() => controller.current?.abort()}>{t('cancelUpload')}</button>}
       <small>{t('uploadIsoHint')}</small>
+    </div>
+    <div className="remote-import">
+      <label className="compact-field grow"><span>{t('remoteIsoUrl')}</span><input type="url" value={remoteUrl} disabled={busy} onChange={event => setRemoteUrl(event.target.value)} placeholder="https://files.example.com/game.7z" onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); void importRemote() } }} /></label>
+      <button className="button secondary" disabled={busy || !remoteUrl.trim()} onClick={() => void importRemote()}>{busy ? t('importingRemoteIso') : t('importRemoteIso')}</button>
+      <small>{t('remoteIsoHint')}</small>
+      {remoteError && <span className="inline-error">{remoteError}</span>}
     </div>
     {rows.map(row => <div className="upload-row" key={row.id}>
       <span className="upload-name">{row.name}</span>
