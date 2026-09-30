@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/alanmatiasdev/godsend-web-console/compare/v0.2.1...v0.3.0) (2026-09-30)
+
+
+### Features
+
+* **import:** fetch remote ISO archives ([b62a8d6](https://github.com/alanmatiasdev/godsend-web-console/commit/b62a8d6bf5d7f4c7a779b82fc933d67d1a07f934))
+
 ## [0.2.1](https://github.com/alanmatiasdev/godsend-web-console/compare/v0.2.0...v0.2.1) (2026-09-30)
 
 
